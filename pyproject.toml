@@ -1,54 +1,15 @@
-[tool.poetry]
-name = "ndbioimage"
-version = "2025.1.2"
-description = "Bio image reading, metadata and some affine registration."
-authors = ["W. Pomp <w.pomp@nki.nl>"]
-license = "GPLv3"
-readme = "README.md"
-keywords = ["bioformats", "imread", "numpy", "metadata"]
-include = ["transform.txt"]
-repository = "https://github.com/wimpomp/ndbioimage"
-exclude = ["ndbioimage/jars"]
-
-[tool.poetry.dependencies]
-python = "^3.10"
-numpy = ">=1.20.0"
-pandas = "*"
-tifffile = "*"
-czifile = "2019.7.2"
-tiffwrite = ">=2024.12.1"
-ome-types = ">=0.4.0"
-pint = "*"
-tqdm = "*"
-lxml = "*"
-pyyaml = "*"
-parfor = ">=2025.1.0"
-JPype1 = "*"
-SimpleITK-SimpleElastix = [
-    { version = "*", python = "<3.12" },
-    { version = "*", python = ">=3.12", markers = "sys_platform != 'darwin'" },
-    { version = "*", python = ">=3.12", markers = "platform_machine == 'aarch64'" },
-]
-scikit-image = "*"
-imagecodecs = "*"
-xsdata = "^23"  # until pydantic is up-to-date
-matplotlib = { version = "*", optional = true }
-scikit-video = { version = "*", optional = true }
-pytest = { version = "*", optional = true }
-
-[tool.poetry.extras]
-test = ["pytest"]
-write = ["matplotlib", "scikit-video"]
-
-[tool.poetry.scripts]
-ndbioimage = "ndbioimage:main"
-
-[tool.pytest.ini_options]
-filterwarnings = ["ignore:::(colorcet)"]
-
-[tool.isort]
-line_length = 119
-
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["maturin>=1.8,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "ndbioimage_rs"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
+]
+dynamic = ["version"]
+[tool.maturin]
+features = ["pyo3/extension-module"]
