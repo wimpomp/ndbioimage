@@ -7,12 +7,12 @@ fn main() -> anyhow::Result<()> {
     println!("cargo:rerun-if-changed=build.rs");
 
     if std::env::var("DOCS_RS").is_ok() {
+        Ok(())
+    } else {
         Ok(retry(
             Exponential::from_millis(1000).map(delay::jitter).take(4),
             deploy_java_artifacts,
         )?)
-    } else {
-        Ok(())
     }
 }
 
