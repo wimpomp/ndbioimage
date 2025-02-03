@@ -2,6 +2,12 @@
 name = "ndbioimage_rs"
 version = "2025.1.0"
 edition = "2021"
+authors = ["Wim Pomp <w.pomp@nki.nl>"]
+license = "GPL-3.0-or-later"
+description = "Read bio image formats using the bio-formats java package."
+homepage = "https://github.com/wimpomp/ndbioimage/tree/rs"
+repository = "https://github.com/wimpomp/ndbioimage/tree/rs"
+readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [lib]

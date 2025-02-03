@@ -1,4 +1,4 @@
-[![Pytest](https://github.com/wimpomp/ndbioimage/actions/workflows/pytest.yml/badge.svg)](https://github.com/wimpomp/ndbioimage/actions/workflows/pytest.yml)
-
-# Work in progress
-Rust rewrite of python version
+# ndbioimage
+## Work in progress
+Rust rewrite of python version. Read bio image formats using the bio-formats java package.
+[https://www.openmicroscopy.org/bio-formats/](https://www.openmicroscopy.org/bio-formats/)
