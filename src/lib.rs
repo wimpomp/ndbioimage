@@ -42,7 +42,7 @@ impl TryFrom<i32> for PixelType {
     }
 }
 
-/// Struct containing frame data in one of eight pixel types. Cast to Array2<T> using try_into.
+/// Struct containing frame data in one of eight pixel types. Cast to `Array2<T>` using try_into.
 #[derive(Clone, Debug)]
 pub enum Frame {
     INT8(Array2<i8>),
