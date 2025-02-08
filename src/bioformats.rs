@@ -31,7 +31,7 @@ macro_rules! method_arg {
 
 macro_rules! method {
     ($name:ident, $method:expr $(,[$($n:tt: $t:ty$(|$p:tt)?),*])? $(=> $tt:ty$(|$c:tt)?)?) => {
-        pub fn $name(&self, $($($n: $t),*)?) -> method_return!($($tt)?) {
+        pub(crate) fn $name(&self, $($($n: $t),*)?) -> method_return!($($tt)?) {
             let args: Vec<InvocationArg> = vec![$($( method_arg!($n:$t$(|$p)?) ),*)?];
             let _result = jvm().invoke(&self.0, $method, &args)?;
 
@@ -55,10 +55,10 @@ macro_rules! method {
     };
 }
 
-pub struct DebugTools;
+pub(crate) struct DebugTools;
 
 impl DebugTools {
-    pub fn set_root_level(level: &str) -> Result<()> {
+    pub(crate) fn set_root_level(level: &str) -> Result<()> {
         jvm().invoke_static(
             "loci.common.DebugTools",
             "setRootLevel",
@@ -68,10 +68,10 @@ impl DebugTools {
     }
 }
 
-pub struct ChannelSeparator(Instance);
+pub(crate) struct ChannelSeparator(Instance);
 
 impl ChannelSeparator {
-    pub fn new(image_reader: &ImageReader) -> Result<Self> {
+    pub(crate) fn new(image_reader: &ImageReader) -> Result<Self> {
         let jvm = jvm();
         let channel_separator = jvm.create_instance(
             "loci.formats.ChannelSeparator",
@@ -80,7 +80,7 @@ impl ChannelSeparator {
         Ok(ChannelSeparator(channel_separator))
     }
 
-    pub fn open_bytes(&self, index: i32) -> Result<Vec<u8>> {
+    pub(crate) fn open_bytes(&self, index: i32) -> Result<Vec<u8>> {
         let bi8 = self.open_bi8(index)?;
         Ok(unsafe { std::mem::transmute::<Vec<i8>, Vec<u8>>(bi8) })
     }
@@ -89,7 +89,7 @@ impl ChannelSeparator {
     method!(get_index, "getIndex", [z: i32|p, c: i32|p, t: i32|p] => i32|c);
 }
 
-pub struct ImageReader(Instance);
+pub(crate) struct ImageReader(Instance);
 
 impl Drop for ImageReader {
     fn drop(&mut self) {
@@ -98,17 +98,27 @@ impl Drop for ImageReader {
 }
 
 impl ImageReader {
-    pub fn new() -> Result<Self> {
+    pub(crate) fn new() -> Result<Self> {
         let reader = jvm().create_instance("loci.formats.ImageReader", InvocationArg::empty())?;
         Ok(ImageReader(reader))
     }
 
-    pub fn open_bytes(&self, index: i32) -> Result<Vec<u8>> {
+    pub(crate) fn open_bytes(&self, index: i32) -> Result<Vec<u8>> {
         let bi8 = self.open_bi8(index)?;
         Ok(unsafe { std::mem::transmute::<Vec<i8>, Vec<u8>>(bi8) })
     }
 
+    pub(crate) fn ome_xml(&self) -> Result<String> {
+        let mds = self.get_metadata_store()?;
+        Ok(jvm()
+            .chain(&mds)?
+            .cast("loci.formats.ome.OMEPyramidStore")?
+            .invoke("dumpXML", &[])?
+            .to_rust()?)
+    }
+
     method!(set_metadata_store, "setMetadataStore", [ome_data: Instance]);
+    method!(get_metadata_store, "getMetadataStore" => Instance);
     method!(set_id, "setId", [id: &str]);
     method!(set_series, "setSeries", [series: i32|p]);
     method!(open_bi8, "openBytes", [index: i32|p] => Vec<i8>|c);
@@ -129,10 +139,10 @@ impl ImageReader {
     method!(close, "close");
 }
 
-pub struct MetadataTools(Instance);
+pub(crate) struct MetadataTools(Instance);
 
 impl MetadataTools {
-    pub fn new() -> Result<Self> {
+    pub(crate) fn new() -> Result<Self> {
         let meta_data_tools =
             jvm().create_instance("loci.formats.MetadataTools", InvocationArg::empty())?;
         Ok(MetadataTools(meta_data_tools))

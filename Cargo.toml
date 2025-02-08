@@ -1,6 +1,6 @@
 [package]
 name = "ndbioimage"
-version = "2025.1.2"
+version = "2025.2.0"
 edition = "2021"
 authors = ["Wim Pomp <w.pomp@nki.nl>"]
 license = "GPL-3.0-or-later"
@@ -31,9 +31,9 @@ optional = true
 rayon = "1.10.0"
 
 [build-dependencies]
+anyhow = { version = "1.0.95"}
 j4rs = { version = "0.22", features = [] }
 retry = { version = "2.0.0"}
-anyhow = { version = "1.0.95"}
 
 [features]
 python = ["dep:pyo3", "dep:numpy"]

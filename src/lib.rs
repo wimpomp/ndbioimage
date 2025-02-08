@@ -144,7 +144,7 @@ pub struct Reader {
     image_reader: ImageReader,
     /// path to file
     pub path: PathBuf,
-    /// which (if more) than 1 of the series in the file to open
+    /// which (if more than 1) of the series in the file to open
     pub series: i32,
     /// size x (horizontal)
     pub size_x: usize,
@@ -154,7 +154,7 @@ pub struct Reader {
     pub size_c: usize,
     /// size z (# slices)
     pub size_z: usize,
-    /// size t (time/frames)
+    /// size t (# time/frames)
     pub size_t: usize,
     /// pixel type ((u)int(8/16/32) or float(32/64))
     pub pixel_type: PixelType,
@@ -212,6 +212,11 @@ impl Reader {
             pixel_type,
             little_endian,
         })
+    }
+
+    /// Get ome metadata as xml string
+    pub fn ome_xml(&self) -> Result<String> {
+        self.image_reader.ome_xml()
     }
 
     fn deinterleave(&self, bytes: Vec<u8>, channel: usize) -> Result<Vec<u8>> {
@@ -311,7 +316,10 @@ mod tests {
     use rayon::prelude::*;
 
     fn open(file: &str) -> Result<Reader> {
-        let path = std::env::current_dir()?.join("tests").join("files").join(file);
+        let path = std::env::current_dir()?
+            .join("tests")
+            .join("files")
+            .join(file);
         Reader::new(&path, 0)
     }
 
@@ -361,6 +369,35 @@ mod tests {
             .map(|file| get_frame(file).unwrap())
             .collect::<Vec<_>>();
         println!("{:?}", frames);
+        Ok(())
+    }
+
+    #[test]
+    fn read_sequence() -> Result<()> {
+        let file = "YTL1841B2-2-1_1hr_DMSO_galinduction_1/Pos0/img_000000000_mScarlet_GFP-mSc-filter_004.tif";
+        let reader = open(file)?;
+        println!("reader: {:?}", reader);
+        let frame = reader.get_frame(0, 4, 0)?;
+        println!("frame: {:?}", frame);
+        let frame = reader.get_frame(0, 2, 0)?;
+        println!("frame: {:?}", frame);
+        Ok(())
+    }
+
+    #[test]
+    fn read_sequence1() -> Result<()> {
+        let file = "4-Pos_001_002/img_000000000_Cy3-Cy3_filter_000.tif";
+        let reader = open(file)?;
+        println!("reader: {:?}", reader);
+        Ok(())
+    }
+
+    #[test]
+    fn ome_xml() -> Result<()> {
+        let file = "Experiment-2029.czi";
+        let reader = open(file)?;
+        let xml = reader.ome_xml()?;
+        println!("{}", xml);
         Ok(())
     }
 }
