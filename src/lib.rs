@@ -215,7 +215,7 @@ impl Reader {
     }
 
     /// Get ome metadata as xml string
-    pub fn ome_xml(&self) -> Result<String> {
+    pub fn get_ome_xml(&self) -> Result<String> {
         self.image_reader.ome_xml()
     }
 
@@ -396,7 +396,7 @@ mod tests {
     fn ome_xml() -> Result<()> {
         let file = "Experiment-2029.czi";
         let reader = open(file)?;
-        let xml = reader.ome_xml()?;
+        let xml = reader.get_ome_xml()?;
         println!("{}", xml);
         Ok(())
     }
