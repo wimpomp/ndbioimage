@@ -1,7 +1,7 @@
+use crate::bioformats::download_bioformats;
 use crate::{Frame, Reader};
-use numpy::{IntoPyArray, PyArrayMethods, ToPyArray};
+use numpy::ToPyArray;
 use pyo3::prelude::*;
-use pyo3::BoundObject;
 use std::path::PathBuf;
 
 #[pyclass(subclass)]
@@ -41,11 +41,35 @@ impl PyReader {
             Frame::DOUBLE(arr) => arr.to_pyarray(py).into_any(),
         })
     }
+
+    fn get_ome_xml(&self) -> PyResult<String> {
+        let reader = Reader::new(&self.path, self.series)?; // TODO: prevent making a new Reader each time
+        Ok(reader.get_ome_xml()?)
+    }
+}
+
+pub(crate) fn ndbioimage_file() -> anyhow::Result<PathBuf> {
+    let file = Python::with_gil(|py| {
+        py.import("ndbioimage")
+            .unwrap()
+            .filename()
+            .unwrap()
+            .to_string()
+    });
+    Ok(PathBuf::from(file))
 }
 
 #[pymodule]
 #[pyo3(name = "ndbioimage_rs")]
 fn ndbioimage_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyReader>()?;
+
+    #[pyfn(m)]
+    #[pyo3(name = "download_bioformats")]
+    fn py_download_bioformats(gpl_formats: bool) -> PyResult<()> {
+        download_bioformats(gpl_formats)?;
+        Ok(())
+    }
+
     Ok(())
 }
