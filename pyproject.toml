@@ -1,16 +1,56 @@
 [build-system]
-requires = ["maturin>=1.8.2"]
+requires = ["maturin>=1.8,<2.0"]
 build-backend = "maturin"
 
 [project]
 name = "ndbioimage"
+description = "Bio image reading, metadata and some affine registration."
+authors = [
+    { name = "W. Pomp", email = "w.pomp@nki.nl" }
+]
+license = "MIT"
+readme = "README.md"
+keywords = ["bioformats", "imread", "numpy", "metadata"]
 requires-python = ">=3.10"
 classifiers = [
+    "License :: OSI Approved :: MIT License",
     "Programming Language :: Rust",
-    "Programming Language :: Python :: Implementation :: CPython",
-    "Programming Language :: Python :: Implementation :: PyPy",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
 ]
 dynamic = ["version"]
+dependencies = [
+    "numpy",
+    "pandas",
+    "tiffwrite",
+    "ome-types",
+    "pint",
+    "tqdm",
+    "lxml",
+    "pyyaml",
+    "parfor",
+    "SimpleITK-SimpleElastix",
+    "scikit-image",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+write = ["matplotlib", "scikit-video"]
+
+[project.urls]
+Repository = "https://github.com/wimpomp/ndbioimage/tree/rs"
+
+[project.scripts]
+ndbioimage = "ndbioimage:main"
+
+[tool.pytest.ini_options]
+filterwarnings = ["ignore:::(colorcet)"]
 
 [tool.maturin]
 python-source = "py"

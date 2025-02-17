@@ -8,17 +8,16 @@ use std::path::PathBuf;
 #[pyo3(name = "Reader")]
 #[derive(Debug)]
 struct PyReader {
-    path: PathBuf,
-    series: i32,
+    reader: Reader,
 }
 
 #[pymethods]
 impl PyReader {
     #[new]
     fn new(path: &str, series: usize) -> PyResult<Self> {
+        let path = PathBuf::from(path);
         Ok(PyReader {
-            path: PathBuf::from(path),
-            series: series as i32,
+            reader: Reader::new(&path, series as i32)?,
         })
     }
 
@@ -29,8 +28,7 @@ impl PyReader {
         z: usize,
         t: usize,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let reader = Reader::new(&self.path, self.series)?; // TODO: prevent making a new Reader each time
-        Ok(match reader.get_frame(c, z, t)? {
+        Ok(match self.reader.get_frame(c, z, t)? {
             Frame::INT8(arr) => arr.to_pyarray(py).into_any(),
             Frame::UINT8(arr) => arr.to_pyarray(py).into_any(),
             Frame::INT16(arr) => arr.to_pyarray(py).into_any(),
@@ -43,8 +41,7 @@ impl PyReader {
     }
 
     fn get_ome_xml(&self) -> PyResult<String> {
-        let reader = Reader::new(&self.path, self.series)?; // TODO: prevent making a new Reader each time
-        Ok(reader.get_ome_xml()?)
+        Ok(self.reader.get_ome_xml()?)
     }
 }
 

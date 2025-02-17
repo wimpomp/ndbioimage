@@ -71,6 +71,7 @@ macro_rules! method_arg {
 
 macro_rules! method {
     ($name:ident, $method:expr $(,[$($n:tt: $t:ty$(|$p:tt)?),*])? $(=> $tt:ty$(|$c:tt)?)?) => {
+        #[allow(dead_code)]
         pub(crate) fn $name(&self, $($($n: $t),*)?) -> method_return!($($tt)?) {
             let args: Vec<InvocationArg> = vec![$($( method_arg!($n:$t$(|$p)?) ),*)?];
             let _result = jvm().invoke(&self.0, $method, &args)?;
@@ -95,10 +96,12 @@ macro_rules! method {
     };
 }
 
-pub(crate) struct DebugTools;
+/// Wrapper around bioformats java class loci.common.DebugTools
+pub struct DebugTools;
 
 impl DebugTools {
-    pub(crate) fn set_root_level(level: &str) -> Result<()> {
+    /// set debug root level: ERROR, DEBUG, TRACE, INFO, OFF
+    pub fn set_root_level(level: &str) -> Result<()> {
         jvm().invoke_static(
             "loci.common.DebugTools",
             "setRootLevel",
@@ -108,6 +111,7 @@ impl DebugTools {
     }
 }
 
+/// Wrapper around bioformats java class loci.formats.ChannelSeparator
 pub(crate) struct ChannelSeparator(Instance);
 
 impl ChannelSeparator {
@@ -129,7 +133,8 @@ impl ChannelSeparator {
     method!(get_index, "getIndex", [z: i32|p, c: i32|p, t: i32|p] => i32|c);
 }
 
-pub(crate) struct ImageReader(Instance);
+/// Wrapper around bioformats java class loci.formats.ImageReader
+pub struct ImageReader(Instance);
 
 impl Drop for ImageReader {
     fn drop(&mut self) {
@@ -179,6 +184,7 @@ impl ImageReader {
     method!(close, "close");
 }
 
+/// Wrapper around bioformats java class loci.formats.MetadataTools
 pub(crate) struct MetadataTools(Instance);
 
 impl MetadataTools {

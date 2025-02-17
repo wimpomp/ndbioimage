@@ -968,7 +968,7 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
 
     @staticmethod
     def kill_vm() -> None:
-        JVM().kill_vm()
+        pass
 
     def new(self, *args: Any, **kwargs: Any) -> View:
         warnings.warn('Imread.new has been deprecated, use Imread.view instead.', DeprecationWarning, 2)

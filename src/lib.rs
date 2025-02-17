@@ -9,7 +9,9 @@ use ndarray::Array2;
 use num::{FromPrimitive, Zero};
 use std::any::type_name;
 use std::fmt::Debug;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use thread_local::ThreadLocal;
 
 /// Pixel types (u)int(8/16/32) or float(32/64)
 #[derive(Clone, Debug)]
@@ -141,7 +143,7 @@ where
 
 /// Reader interface to file. Use get_frame to get data.
 pub struct Reader {
-    image_reader: ImageReader,
+    image_reader: ThreadLocal<ImageReader>,
     /// path to file
     pub path: PathBuf,
     /// which (if more than 1) of the series in the file to open
@@ -159,6 +161,22 @@ pub struct Reader {
     /// pixel type ((u)int(8/16/32) or float(32/64))
     pub pixel_type: PixelType,
     little_endian: bool,
+}
+
+impl Deref for Reader {
+    type Target = ImageReader;
+
+    fn deref(&self) -> &Self::Target {
+        self.image_reader.get_or(|| {
+            let reader = ImageReader::new().unwrap();
+            let meta_data_tools = MetadataTools::new().unwrap();
+            let ome_meta = meta_data_tools.create_ome_xml_metadata().unwrap();
+            reader.set_metadata_store(ome_meta).unwrap();
+            reader.set_id(self.path.to_str().unwrap()).unwrap();
+            reader.set_series(self.series).unwrap();
+            reader
+        })
+    }
 }
 
 impl Clone for Reader {
@@ -187,36 +205,31 @@ impl Reader {
     /// Create new reader for image file at path.
     pub fn new(path: &Path, series: i32) -> Result<Self> {
         DebugTools::set_root_level("ERROR")?;
-        let reader = ImageReader::new()?;
-        let meta_data_tools = MetadataTools::new()?;
-        let ome_meta = meta_data_tools.create_ome_xml_metadata()?;
-        reader.set_metadata_store(ome_meta)?;
-        reader.set_id(path.to_str().unwrap())?;
-        reader.set_series(series)?;
-        let size_x = reader.get_size_x()?;
-        let size_y = reader.get_size_y()?;
-        let size_c = reader.get_size_c()?;
-        let size_z = reader.get_size_z()?;
-        let size_t = reader.get_size_t()?;
-        let pixel_type = PixelType::try_from(reader.get_pixel_type()?)?;
-        let little_endian = reader.is_little_endian()?;
-        Ok(Reader {
-            image_reader: reader,
+        let mut reader = Reader {
+            image_reader: ThreadLocal::new(),
             path: PathBuf::from(path),
             series,
-            size_x: size_x as usize,
-            size_y: size_y as usize,
-            size_c: size_c as usize,
-            size_z: size_z as usize,
-            size_t: size_t as usize,
-            pixel_type,
-            little_endian,
-        })
+            size_x: 0,
+            size_y: 0,
+            size_c: 0,
+            size_z: 0,
+            size_t: 0,
+            pixel_type: PixelType::INT8,
+            little_endian: false,
+        };
+        reader.size_x = reader.get_size_x()? as usize;
+        reader.size_y = reader.get_size_y()? as usize;
+        reader.size_c = reader.get_size_c()? as usize;
+        reader.size_z = reader.get_size_z()? as usize;
+        reader.size_t = reader.get_size_t()? as usize;
+        reader.pixel_type = PixelType::try_from(reader.get_pixel_type()?)?;
+        reader.little_endian = reader.is_little_endian()?;
+        Ok(reader)
     }
 
     /// Get ome metadata as xml string
     pub fn get_ome_xml(&self) -> Result<String> {
-        self.image_reader.ome_xml()
+        self.ome_xml()
     }
 
     fn deinterleave(&self, bytes: Vec<u8>, channel: usize) -> Result<Vec<u8>> {
@@ -240,16 +253,16 @@ impl Reader {
 
     /// Retrieve fame at channel c, slize z and time t.
     pub fn get_frame(&self, c: usize, z: usize, t: usize) -> Result<Frame> {
-        let bytes = if self.image_reader.is_rgb()? & self.image_reader.is_interleaved()? {
-            let index = self.image_reader.get_index(z as i32, 0, t as i32)?;
-            self.deinterleave(self.image_reader.open_bytes(index)?, c)?
-        } else if self.image_reader.get_rgb_channel_count()? > 1 {
-            let channel_separator = bioformats::ChannelSeparator::new(&self.image_reader)?;
+        let bytes = if self.is_rgb()? & self.is_interleaved()? {
+            let index = self.get_index(z as i32, 0, t as i32)?;
+            self.deinterleave(self.open_bytes(index)?, c)?
+        } else if self.get_rgb_channel_count()? > 1 {
+            let channel_separator = bioformats::ChannelSeparator::new(self)?;
             let index = channel_separator.get_index(z as i32, c as i32, t as i32)?;
             channel_separator.open_bytes(index)?
-        } else if self.image_reader.is_indexed()? {
-            let index = self.image_reader.get_index(z as i32, 0, t as i32)?;
-            self.image_reader.open_bytes(index)?
+        } else if self.is_indexed()? {
+            let index = self.get_index(z as i32, 0, t as i32)?;
+            self.open_bytes(index)?
             // TODO: apply LUT
             // let _bytes_lut = match self.pixel_type {
             //     PixelType::INT8 | PixelType::UINT8 => {
@@ -261,8 +274,8 @@ impl Reader {
             //     _ => {}
             // };
         } else {
-            let index = self.image_reader.get_index(z as i32, c as i32, t as i32)?;
-            self.image_reader.open_bytes(index)?
+            let index = self.get_index(z as i32, c as i32, t as i32)?;
+            self.open_bytes(index)?
         };
         self.bytes_to_frame(bytes)
     }

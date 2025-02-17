@@ -1,13 +1,16 @@
 [package]
 name = "ndbioimage"
-version = "2025.2.1"
+version = "2025.2.2"
 edition = "2021"
+rust-version = "1.78.0"
 authors = ["Wim Pomp <w.pomp@nki.nl>"]
-license = "GPL-3.0-or-later"
+license = "MIT"
 description = "Read bio image formats using the bio-formats java package."
 homepage = "https://github.com/wimpomp/ndbioimage/tree/rs"
 repository = "https://github.com/wimpomp/ndbioimage/tree/rs"
 readme = "README.md"
+keywords = ["bioformats", "imread", "ndarray", "metadata"]
+categories = ["multimedia::images", "science"]
 exclude = ["/tests"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -21,6 +24,7 @@ j4rs = "0.22.0"
 ndarray = "0.16.1"
 num = "0.4.3"
 numpy = { version = "0.23.0", optional = true }
+thread_local = "1.1.8"
 
 [dependencies.pyo3]
 version = "0.23.4"
