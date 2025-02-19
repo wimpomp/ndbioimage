@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import multiprocessing
 import os
 import re
 import warnings
-from abc import ABC, ABCMeta, abstractmethod
+from abc import ABC
 from argparse import ArgumentParser
 from collections import OrderedDict
 from datetime import datetime
@@ -18,11 +17,12 @@ from typing import Any, Callable, Generator, Iterable, Optional, Sequence, TypeV
 import numpy as np
 import yaml
 from numpy.typing import ArrayLike, DTypeLike
-from ome_types import OME, from_xml, model, ureg
+from ome_types import OME, from_xml, ureg
 from pint import set_application_registry
 from tiffwrite import FrameInfo, IJTiffParallel
 from tqdm.auto import tqdm
 
+from .ndbioimage_rs import Reader, download_bioformats  # noqa
 from .transforms import Transform, Transforms  # noqa: F401
 
 try:
@@ -44,8 +44,11 @@ warnings.filterwarnings('ignore', 'Reference to unknown ID')
 Number = int | float | np.integer | np.floating
 
 
-class ReaderNotFoundError(Exception):
-    pass
+for dep_file in (Path(__file__).parent / "deps").glob("*_"):
+    dep_file.rename(str(dep_file)[:-1])
+
+if not list((Path(__file__).parent / "jassets").glob("bioformats*.jar")):
+    download_bioformats(True)
 
 
 class TransformTiff(IJTiffParallel):
@@ -94,12 +97,6 @@ def try_default(fun: Callable[..., R], default: Any, *args: Any, **kwargs: Any) 
         return fun(*args, **kwargs)
     except Exception:  # noqa
         return default
-
-
-def bioformats_ome(path: str | Path) -> OME:
-    from .rs import Reader
-    reader = Reader(str(path), 0)
-    return from_xml(reader.get_ome_xml(), parser='lxml')
 
 
 class Shape(tuple):
@@ -164,9 +161,9 @@ class OmeCache(DequeDict):
                 (path.with_suffix('.ome.xml').lstat() if path.with_suffix('.ome.xml').exists() else None))
 
 
-def get_positions(path: str | Path) -> Optional[list[int]]:
-    subclass = AbstractReader.get_subclass(path)
-    return subclass.get_positions(AbstractReader.split_path_series(path)[0])
+def get_positions(path: str | Path) -> Optional[list[int]]:  # noqa
+    # TODO
+    return None
 
 
 class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
@@ -203,89 +200,181 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
                  << [0.02, 0.0005] in %
 
                 See __init__ and other functions for more ideas.
-
-            Subclassing:
-                Subclass AbstractReader to add more file types. A subclass should always have at least the following
-                methods:
-                    staticmethod _can_open(path): returns True when the subclass can open the image in path
-                    __frame__(self, c, z, t): this should return a single frame at channel c, slice z and time t
-                    optional open(self): code to be run during initialization, e.g. to open a file handle
-                    optional close(self): close the file in a proper way
-                    optional class field priority: subclasses with lower priority will be tried first, default = 99
-                    optional get_ome(self) -> OME: return an OME structure with metadata,
-                        if not present bioformats will be used to generate an OME
-                    Any other method can be overridden as needed
     """
 
-    isclosed: Optional[bool]
-    channel_names: Optional[list[str]]
-    series: Optional[int]
-    pxsize_um: Optional[float]
-    deltaz_um: Optional[float]
-    exposuretime_s: Optional[list[float]]
-    timeinterval: Optional[float]
-    binning: Optional[list[int]]
-    laserwavelengths: Optional[list[tuple[float]]]
-    laserpowers: Optional[list[tuple[float]]]
-    objective: Optional[model.Objective]
-    magnification: Optional[float]
-    tubelens: Optional[model.Objective]
-    filter: Optional[str]
-    powermode: Optional[str]
-    collimator: Optional[str]
-    tirfangle: Optional[list[float]]
-    gain: Optional[list[float]]
-    pcf: Optional[list[float]]
-    path: Path
-    __frame__: Callable[[int, int, int], np.ndarray]
+    do_not_pickle = 'cache', 'reader'
+    ureg = ureg
+
+    def close(self) -> None:
+        self.reader.close()
 
     @staticmethod
-    def get_subclass(path: Path | str | Any):
-        if len(AbstractReader.__subclasses__()) == 0:
-            raise Exception('Restart python kernel please!')
-        path, _ = AbstractReader.split_path_series(path)
-        for subclass in sorted(AbstractReader.__subclasses__(), key=lambda subclass_: subclass_.priority):
-            if subclass._can_open(path):  # noqa
-                do_not_pickle = (AbstractReader.do_not_pickle,) if isinstance(AbstractReader.do_not_pickle, str) \
-                    else AbstractReader.do_not_pickle
-                subclass_do_not_pickle = (subclass.do_not_pickle,) if isinstance(subclass.do_not_pickle, str) \
-                    else subclass.do_not_pickle if hasattr(subclass, 'do_not_pickle') else ()
-                subclass.do_not_pickle = set(do_not_pickle).union(set(subclass_do_not_pickle))
-                return subclass
-        raise ReaderNotFoundError(f'No reader found for {path}.')
+    def get_positions(path: str | Path) -> Optional[list[int]]:  # noqa
+        # TODO
+        return None
 
-
-    def __new__(cls, path: Path | str | Imread | Any = None, dtype: DTypeLike = None, axes: str = None) -> Imread:
-        if cls is not Imread:
-            return super().__new__(cls)
+    def __init__(self, path: Path | str | Imread | Any = None, dtype: DTypeLike = None, axes: str = None) -> None:
+        super().__init__()
         if isinstance(path, Imread):
-            return path
-        subclass = cls.get_subclass(path)
-        do_not_pickle = (AbstractReader.do_not_pickle,) if isinstance(AbstractReader.do_not_pickle, str) \
-            else AbstractReader.do_not_pickle
-        subclass_do_not_pickle = (subclass.do_not_pickle,) if isinstance(subclass.do_not_pickle, str) \
-            else subclass.do_not_pickle if hasattr(subclass, 'do_not_pickle') else ()
-        subclass.do_not_pickle = set(do_not_pickle).union(set(subclass_do_not_pickle))
-        return super().__new__(subclass)
+            self.base = path.base or path
+        else:
+            self.base = self
+            self.isclosed = False
+            if isinstance(path, str):
+                path = Path(path)
+            self.path, self.series = self.split_path_series(path)
+            self.reader = Reader(str(self.path), int(self.series))
+            self.frame_decorator = None
+            self.transform = Transforms()
+            if isinstance(path, Path) and path.exists():
+                self.title = self.path.name
+                self.acquisitiondate = datetime.fromtimestamp(self.path.stat().st_mtime).strftime('%y-%m-%dT%H:%M:%S')
+            else:  # ndarray
+                self.title = self.__class__.__name__
+                self.acquisitiondate = 'now'
 
-    def __init__(self, *args: Any, **kwargs: Any):
-        def parse(base: Imread = None,  # noqa
-                  slice: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray] = None,  # noqa
-                  shape: tuple[int, ...] = (0, 0, 0, 0, 0),  # noqa
-                  dtype: DTypeLike = None,  # noqa
-                  frame_decorator: Callable[[Imread, np.ndarray, int, int, int], np.ndarray] = None  # noqa
-                  ) -> tuple[Any, ...]:
-            return base, slice, shape, dtype, frame_decorator
+            self.pcf = None
+            self.powermode = None
+            self.collimator = None
+            self.tirfangle = None
+            self.cyllens = ['None', 'None']
+            self.duolink = 'None'
+            self.detector = [0, 1]
+            self.track = [0]
+            self.cache = DequeDict(16)
+            self.frameoffset = 0, 0  # how far apart the centers of frame and sensor are
 
-        base, slice, shape, dtype, frame_decorator = parse(*args, **kwargs)  # noqa
-        self.base = base or self
-        self.slice = slice
-        self._shape = Shape(shape)
-        self.dtype = dtype
-        self.frame_decorator = frame_decorator
-        self.transform = Transforms()
-        self.flags = dict(C_CONTIGUOUS=False, F_CONTIGUOUS=False, OWNDATA=False, WRITEABLE=False,
-                          ALIGNED=False, WRITEBACKIFCOPY=False, UPDATEIFCOPY=False)
+            # extract some metadata from ome
+            instrument = self.ome.instruments[0] if self.ome.instruments else None
+            image = self.ome.images[self.series if len(self.ome.images) > 1 else 0]
+            pixels = image.pixels
+            self._shape = Shape((pixels.size_y, pixels.size_x, pixels.size_c, pixels.size_z, pixels.size_t),
+                                'yxczt')
+            self.base_shape = Shape((pixels.size_y, pixels.size_x, pixels.size_c, pixels.size_z, pixels.size_t),
+                                    'yxczt')
+            self.dtype = pixels.type.value if dtype is None else dtype
+            self.pxsize = pixels.physical_size_x_quantity
+            try:
+                self.exposuretime = tuple(find(image.pixels.planes, the_c=c).exposure_time_quantity
+                                          for c in range(self.shape['c']))
+            except AttributeError:
+                self.exposuretime = ()
+
+            if self.zstack:
+                self.deltaz = image.pixels.physical_size_z_quantity
+                self.deltaz_um = None if self.deltaz is None else self.deltaz.to(self.ureg.um).m
+            else:
+                self.deltaz = self.deltaz_um = None
+            if image.objective_settings:
+                self.objective = find(instrument.objectives, id=image.objective_settings.id)
+            else:
+                self.objective = None
+            try:
+                t0 = find(image.pixels.planes, the_c=0, the_t=0, the_z=0).delta_t
+                t1 = find(image.pixels.planes, the_c=0, the_t=self.shape['t'] - 1, the_z=0).delta_t
+                self.timeinterval = (t1 - t0) / (self.shape['t'] - 1) if self.shape['t'] > 1 and t1 > t0 else None
+            except AttributeError:
+                self.timeinterval = None
+            try:
+                self.binning = [int(i) for i in image.pixels.channels[0].detector_settings.binning.value.split('x')]
+                if self.pxsize is not None:
+                    self.pxsize *= self.binning[0]
+            except (AttributeError, IndexError, ValueError):
+                self.binning = None
+            self.channel_names = [channel.name for channel in image.pixels.channels]
+            self.channel_names += [chr(97 + i) for i in range(len(self.channel_names), self.shape['c'])]
+            self.cnamelist = self.channel_names
+            try:
+                optovars = [objective for objective in instrument.objectives if 'tubelens' in objective.id.lower()]
+            except AttributeError:
+                optovars = []
+            if len(optovars) == 0:
+                self.tubelens = None
+            else:
+                self.tubelens = optovars[0]
+            if self.objective:
+                if self.tubelens:
+                    self.magnification = self.objective.nominal_magnification * self.tubelens.nominal_magnification
+                else:
+                    self.magnification = self.objective.nominal_magnification
+                self.NA = self.objective.lens_na
+            else:
+                self.magnification = None
+                self.NA = None
+
+            self.gain = [find(instrument.detectors, id=channel.detector_settings.id).amplification_gain
+                         for channel in image.pixels.channels
+                         if channel.detector_settings
+                         and find(instrument.detectors, id=channel.detector_settings.id).amplification_gain]
+            self.laserwavelengths = [(channel.excitation_wavelength_quantity.to(self.ureg.nm).m,)
+                                     for channel in pixels.channels if channel.excitation_wavelength_quantity]
+            self.laserpowers = try_default(lambda: [(1 - channel.light_source_settings.attenuation,)
+                                                    for channel in pixels.channels], [])
+            self.filter = try_default(  # type: ignore
+                lambda: [find(instrument.filter_sets, id=channel.filter_set_ref.id).model
+                         for channel in image.pixels.channels], None)
+            self.pxsize_um = None if self.pxsize is None else self.pxsize.to(self.ureg.um).m
+            self.exposuretime_s = [None if i is None else i.to(self.ureg.s).m for i in self.exposuretime]
+
+            if axes is None:
+                self.axes = ''.join(i for i in 'cztyx' if self.shape[i] > 1)
+            elif axes.lower() == 'full':
+                self.axes = 'cztyx'
+            else:
+                self.axes = axes
+            self.slice = [np.arange(s, dtype=int) for s in self.shape.yxczt]
+
+            m = self.extrametadata
+            if m is not None:
+                try:
+                    self.cyllens = m['CylLens']
+                    self.duolink = m['DLFilterSet'].split(' & ')[m['DLFilterChannel']]
+                    if 'FeedbackChannels' in m:
+                        self.feedback = m['FeedbackChannels']
+                    else:
+                        self.feedback = m['FeedbackChannel']
+                except Exception:  # noqa
+                    self.cyllens = ['None', 'None']
+                    self.duolink = 'None'
+                    self.feedback = []
+            try:
+                self.cyllenschannels = np.where([self.cyllens[self.detector[c]].lower() != 'none'
+                                                 for c in range(self.shape['c'])])[0].tolist()
+            except Exception:  # noqa
+                pass
+            try:
+                s = int(re.findall(r'_(\d{3})_', self.duolink)[0]) * ureg.nm
+            except Exception:  # noqa
+                s = 561 * ureg.nm
+            try:
+                sigma = []
+                for c, d in enumerate(self.detector):
+                    emission = (np.hstack(self.laserwavelengths[c]) + 22) * ureg.nm
+                    sigma.append([emission[emission > s].max(initial=0), emission[emission < s].max(initial=0)][d])
+                sigma = np.hstack(sigma)
+                sigma[sigma == 0] = 600 * ureg.nm
+                sigma /= 2 * self.NA * self.pxsize
+                self.sigma = sigma.magnitude.tolist()  # type: ignore
+            except Exception:  # noqa
+                self.sigma = [2] * self.shape['c']
+            if not self.NA:
+                self.immersionN = 1
+            elif 1.5 < self.NA:
+                self.immersionN = 1.661
+            elif 1.3 < self.NA < 1.5:
+                self.immersionN = 1.518
+            elif 1 < self.NA < 1.3:
+                self.immersionN = 1.33
+            else:
+                self.immersionN = 1
+
+            p = re.compile(r'(\d+):(\d+)$')
+            try:
+                self.track, self.detector = zip(*[[int(i) for i in p.findall(find(
+                    self.ome.images[self.series].pixels.channels, id=f'Channel:{c}').detector_settings.id)[0]]
+                                                  for c in range(self.shape['c'])])
+            except Exception:  # noqa
+                pass
 
     def __call__(self, c: int = None, z: int = None, t: int = None, x: int = None, y: int = None) -> np.ndarray:
         """ same as im[] but allowing keyword axes, but slices need to made with slice() or np.s_ """
@@ -359,7 +448,7 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
 
         # TODO: check output dimensionality when requested shape in some dimension is 1
         if all([isinstance(s, Number) or a < 0 and s.size == 1 for s, a in zip(new_slice, axes_idx)]):
-            return self.block(*new_slice).item()
+            return self.block(*new_slice).item()  # type: ignore
         else:
             new = View(self)
             new.slice = new_slice
@@ -381,8 +470,7 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
     def __setstate__(self, state: dict[str, Any]) -> None:
         """ What happens during unpickling """
         self.__dict__.update({key: value for key, value in state.items() if key != 'cache_size'})
-        if isinstance(self, AbstractReader):
-            self.open()
+        self.reader = Reader(str(self.path), int(self.series))
         self.cache = DequeDict(state.get('cache_size', 16))
 
     def __str__(self) -> str:
@@ -406,7 +494,7 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
         if dtype is not None:
             block = block.astype(dtype)
         if block.ndim == 0:
-            return block.item()
+            return block.item()  # type: ignore
         axes = ''.join(j for i, j in enumerate('yxczt') if i not in axes_squeeze)
         return block.transpose([axes.find(i) for i in self.shape.axes if i in axes])
 
@@ -415,6 +503,7 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
         """ frame-wise application of np.argmin and np.argmax """
         if axis is None:
             value = arg = None
+            axes = ''.join(i for i in self.axes if i in 'yx') + 'czt'
             for idx in product(range(self.shape['c']), range(self.shape['z']), range(self.shape['t'])):
                 yxczt = (slice(None), slice(None)) + idx
                 in_idx = tuple(yxczt['yxczt'.find(i)] for i in self.axes)
@@ -424,16 +513,20 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
                 if value is None:
                     arg = new_arg + idx
                     value = new_value
+                elif value == new_value:
+                    a = np.ravel_multi_index([arg[axes.find(i)] for i in self.axes], self.shape)
+                    b = np.ravel_multi_index([(new_arg + idx)[axes.find(i)] for i in self.axes], self.shape)
+                    if b < a:
+                        arg = new_arg + idx
                 else:
                     i = fun((value, new_value))  # type: ignore
                     arg = (arg, new_arg + idx)[i]
                     value = (value, new_value)[i]
-            axes = ''.join(i for i in self.axes if i in 'yx') + 'czt'
             arg = np.ravel_multi_index([arg[axes.find(i)] for i in self.axes], self.shape)
             if out is None:
                 return arg
             else:
-                out.itemset(arg)
+                out[:] = arg
                 return out
         else:
             if isinstance(axis, str):
@@ -508,7 +601,7 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
             if out is None:
                 return res
             else:
-                out.itemset(res)
+                out[:] = res
                 return out
         else:
             if isinstance(axis, str):
@@ -613,8 +706,7 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
     def summary(self) -> str:
         """ gives a helpful summary of the recorded experiment """
         s = [f'path/filename: {self.path}',
-             f'series/pos:    {self.series}',
-             f"reader:        {self.base.__class__.__module__.split('.')[-1]}"]
+             f'series/pos:    {self.series}']
         s.extend((f'dtype:         {self.dtype}',
                   f'shape ({self.axes}):'.ljust(15) + f"{' x '.join(str(i) for i in self.shape)}"))
         if self.pxsize_um:
@@ -754,7 +846,7 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
 
     @wraps(np.ndarray.reshape)
     def reshape(self, *args, **kwargs):
-        return np.asarray(self).reshape(*args, **kwargs)
+        return np.asarray(self).reshape(*args, **kwargs)  # noqa
 
     @wraps(np.ndarray.squeeze)
     def squeeze(self, axes=None):
@@ -859,7 +951,7 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
             self.cache.move_to_end(key)
             f = self.cache[key]
         else:
-            f = self.transform[self.channel_names[c], t].frame(self.__frame__(c, z, t))
+            f = self.transform[self.channel_names[c], t].frame(self.reader.get_frame(int(c), int(z), int(t)))
             if self.frame_decorator is not None:
                 f = self.frame_decorator(self, f, c, z, t)
             if self.cache.maxlen:
@@ -916,12 +1008,6 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
         return [self.get_channel(c) for c in czt[0]], *czt[1:3]  # type: ignore
 
     @staticmethod
-    def bioformats_ome(path: [str, Path]) -> OME:
-        """ Use java BioFormats to make an ome metadata structure. """
-        with multiprocessing.get_context('spawn').Pool(1) as pool:
-            return pool.map(bioformats_ome, (path,))[0]
-
-    @staticmethod
     def fix_ome(ome: OME) -> OME:
         # fix ome if necessary
         for image in ome.images:
@@ -945,8 +1031,8 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
             return OME.from_xml(path.with_suffix('.ome.xml'))
 
     def get_ome(self) -> OME:
-        """ overload this """
-        return self.bioformats_ome(self.path)
+        """ OME metadata structure """
+        return from_xml(self.reader.get_ome_xml(), parser='lxml')
 
     @cached_property
     def ome(self) -> OME:
@@ -1116,201 +1202,19 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
 
 class View(Imread, ABC):
     def __init__(self, base: Imread, dtype: DTypeLike = None) -> None:
-        super().__init__(base.base, base.slice, base.shape, dtype or base.dtype, base.frame_decorator)
+        super().__init__(base)
+        self.dtype = dtype or base.dtype
+        self.slice = base.slice
+        self._shape = Shape(base.shape)
+        self.frame_decorator = base.frame_decorator
         self.transform = base.transform
+        self.flags = dict(C_CONTIGUOUS=False, F_CONTIGUOUS=False, OWNDATA=False, WRITEABLE=False,
+                          ALIGNED=False, WRITEBACKIFCOPY=False, UPDATEIFCOPY=False)
 
     def __getattr__(self, item: str) -> Any:
         if not hasattr(self.base, item):
             raise AttributeError(f'{self.__class__} object has no attribute {item}')
         return self.base.__getattribute__(item)
-
-
-class AbstractReader(Imread, metaclass=ABCMeta):
-    priority = 99
-    do_not_pickle = 'cache'
-    ureg = ureg
-
-    @staticmethod
-    @abstractmethod
-    def _can_open(path: Path | str) -> bool:
-        """ Override this method, and return true when the subclass can open the file """
-        return False
-
-    @staticmethod
-    def get_positions(path: str | Path) -> Optional[list[int]]:
-        return None
-
-    @abstractmethod
-    def __frame__(self, c: int, z: int, t: int) -> np.ndarray:
-        """ Override this, return the frame at c, z, t """
-        return np.random.randint(0, 255, self.shape['yx'])
-
-    def open(self) -> None:
-        """ Optionally override this, open file handles etc.
-            filehandles cannot be pickled and should be marked such by setting do_not_pickle = 'file_handle_name' """
-        return
-
-    def close(self) -> None:
-        """ Optionally override this, close file handles etc. """
-        return
-
-    def __init__(self, path: Path | str | Imread | Any = None, dtype: DTypeLike = None, axes: str = None) -> None:
-        if isinstance(path, Imread):
-            return
-        super().__init__()
-        self.isclosed = False
-        if isinstance(path, str):
-            path = Path(path)
-        self.path, self.series = self.split_path_series(path)
-        if isinstance(path, Path) and path.exists():
-            self.title = self.path.name
-            self.acquisitiondate = datetime.fromtimestamp(self.path.stat().st_mtime).strftime('%y-%m-%dT%H:%M:%S')
-        else:  # ndarray
-            self.title = self.__class__.__name__
-            self.acquisitiondate = 'now'
-
-        self.reader = None
-        self.pcf = None
-        self.powermode = None
-        self.collimator = None
-        self.tirfangle = None
-        self.cyllens = ['None', 'None']
-        self.duolink = 'None'
-        self.detector = [0, 1]
-        self.track = [0]
-        self.cache = DequeDict(16)
-        self.frameoffset = 0, 0  # how far apart the centers of frame and sensor are
-
-        self.open()
-        # extract some metadata from ome
-        instrument = self.ome.instruments[0] if self.ome.instruments else None
-        image = self.ome.images[self.series if len(self.ome.images) > 1 else 0]
-        pixels = image.pixels
-        self.shape = pixels.size_y, pixels.size_x, pixels.size_c, pixels.size_z, pixels.size_t
-        self.base_shape = Shape((pixels.size_y, pixels.size_x, pixels.size_c, pixels.size_z, pixels.size_t), 'yxczt')
-        self.dtype = pixels.type.value if dtype is None else dtype
-        self.pxsize = pixels.physical_size_x_quantity
-        try:
-            self.exposuretime = tuple(find(image.pixels.planes, the_c=c).exposure_time_quantity
-                                      for c in range(self.shape['c']))
-        except AttributeError:
-            self.exposuretime = ()
-
-        if self.zstack:
-            self.deltaz = image.pixels.physical_size_z_quantity
-            self.deltaz_um = None if self.deltaz is None else self.deltaz.to(self.ureg.um).m
-        else:
-            self.deltaz = self.deltaz_um = None
-        if image.objective_settings:
-            self.objective = find(instrument.objectives, id=image.objective_settings.id)
-        else:
-            self.objective = None
-        try:
-            t0 = find(image.pixels.planes, the_c=0, the_t=0, the_z=0).delta_t
-            t1 = find(image.pixels.planes, the_c=0, the_t=self.shape['t'] - 1, the_z=0).delta_t
-            self.timeinterval = (t1 - t0) / (self.shape['t'] - 1) if self.shape['t'] > 1 and t1 > t0 else None
-        except AttributeError:
-            self.timeinterval = None
-        try:
-            self.binning = [int(i) for i in image.pixels.channels[0].detector_settings.binning.value.split('x')]
-            if self.pxsize is not None:
-                self.pxsize *= self.binning[0]
-        except (AttributeError, IndexError, ValueError):
-            self.binning = None
-        self.channel_names = [channel.name for channel in image.pixels.channels]
-        self.channel_names += [chr(97 + i) for i in range(len(self.channel_names), self.shape['c'])]
-        self.cnamelist = self.channel_names
-        try:
-            optovars = [objective for objective in instrument.objectives if 'tubelens' in objective.id.lower()]
-        except AttributeError:
-            optovars = []
-        if len(optovars) == 0:
-            self.tubelens = None
-        else:
-            self.tubelens = optovars[0]
-        if self.objective:
-            if self.tubelens:
-                self.magnification = self.objective.nominal_magnification * self.tubelens.nominal_magnification
-            else:
-                self.magnification = self.objective.nominal_magnification
-            self.NA = self.objective.lens_na
-        else:
-            self.magnification = None
-            self.NA = None
-
-        self.gain = [find(instrument.detectors, id=channel.detector_settings.id).amplification_gain
-                     for channel in image.pixels.channels
-                     if channel.detector_settings
-                     and find(instrument.detectors, id=channel.detector_settings.id).amplification_gain]
-        self.laserwavelengths = [(channel.excitation_wavelength_quantity.to(self.ureg.nm).m,)
-                                 for channel in pixels.channels if channel.excitation_wavelength_quantity]
-        self.laserpowers = try_default(lambda: [(1 - channel.light_source_settings.attenuation,)
-                                                for channel in pixels.channels], [])
-        self.filter = try_default(  # type: ignore
-            lambda: [find(instrument.filter_sets, id=channel.filter_set_ref.id).model
-                     for channel in image.pixels.channels], None)
-        self.pxsize_um = None if self.pxsize is None else self.pxsize.to(self.ureg.um).m
-        self.exposuretime_s = [None if i is None else i.to(self.ureg.s).m for i in self.exposuretime]
-
-        if axes is None:
-            self.axes = ''.join(i for i in 'cztyx' if self.shape[i] > 1)
-        elif axes.lower() == 'full':
-            self.axes = 'cztyx'
-        else:
-            self.axes = axes
-        self.slice = [np.arange(s, dtype=int) for s in self.shape.yxczt]
-
-        m = self.extrametadata
-        if m is not None:
-            try:
-                self.cyllens = m['CylLens']
-                self.duolink = m['DLFilterSet'].split(' & ')[m['DLFilterChannel']]
-                if 'FeedbackChannels' in m:
-                    self.feedback = m['FeedbackChannels']
-                else:
-                    self.feedback = m['FeedbackChannel']
-            except Exception:  # noqa
-                self.cyllens = ['None', 'None']
-                self.duolink = 'None'
-                self.feedback = []
-        try:
-            self.cyllenschannels = np.where([self.cyllens[self.detector[c]].lower() != 'none'
-                                             for c in range(self.shape['c'])])[0].tolist()
-        except Exception:  # noqa
-            pass
-        try:
-            s = int(re.findall(r'_(\d{3})_', self.duolink)[0]) * ureg.nm
-        except Exception:  # noqa
-            s = 561 * ureg.nm
-        try:
-            sigma = []
-            for c, d in enumerate(self.detector):
-                emission = (np.hstack(self.laserwavelengths[c]) + 22) * ureg.nm
-                sigma.append([emission[emission > s].max(initial=0), emission[emission < s].max(initial=0)][d])
-            sigma = np.hstack(sigma)
-            sigma[sigma == 0] = 600 * ureg.nm
-            sigma /= 2 * self.NA * self.pxsize
-            self.sigma = sigma.magnitude.tolist()  # type: ignore
-        except Exception:  # noqa
-            self.sigma = [2] * self.shape['c']
-        if not self.NA:
-            self.immersionN = 1
-        elif 1.5 < self.NA:
-            self.immersionN = 1.661
-        elif 1.3 < self.NA < 1.5:
-            self.immersionN = 1.518
-        elif 1 < self.NA < 1.3:
-            self.immersionN = 1.33
-        else:
-            self.immersionN = 1
-
-        p = re.compile(r'(\d+):(\d+)$')
-        try:
-            self.track, self.detector = zip(*[[int(i) for i in p.findall(find(
-                self.ome.images[self.series].pixels.channels, id=f'Channel:{c}').detector_settings.id)[0]]
-                                              for c in range(self.shape['c'])])
-        except Exception:  # noqa
-            pass
 
 
 def main() -> None:
@@ -1352,6 +1256,3 @@ def main() -> None:
                     f.write(im.ome.to_xml())
             if len(args.file) == 1:
                 print(im.summary)
-
-
-from .readers import *  # noqa

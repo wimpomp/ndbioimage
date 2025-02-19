@@ -15,7 +15,18 @@ struct PyReader {
 impl PyReader {
     #[new]
     fn new(path: &str, series: usize) -> PyResult<Self> {
-        let path = PathBuf::from(path);
+        let mut path = PathBuf::from(path);
+        if path.is_dir() {
+            for file in path.read_dir()? {
+                if let Ok(f) = file {
+                    let p = f.path();
+                    if f.path().is_file() & (p.extension() == Some("tif".as_ref())) {
+                        path = p;
+                        break;
+                    }
+                }
+            }
+        }
         Ok(PyReader {
             reader: Reader::new(&path, series as i32)?,
         })
@@ -42,6 +53,11 @@ impl PyReader {
 
     fn get_ome_xml(&self) -> PyResult<String> {
         Ok(self.reader.get_ome_xml()?)
+    }
+
+    fn close(&mut self) -> PyResult<()> {
+        self.reader.close()?;
+        Ok(())
     }
 }
 
