@@ -1,11 +1,11 @@
 mod bioformats;
 
-mod axes;
+pub mod axes;
 #[cfg(feature = "python")]
 mod py;
-mod reader;
-mod stats;
-mod view;
+pub mod reader;
+pub mod stats;
+pub mod view;
 
 #[cfg(test)]
 mod tests {

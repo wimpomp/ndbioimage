@@ -1,6 +1,6 @@
 [package]
 name = "ndbioimage"
-version = "2025.4.0"
+version = "2025.4.1"
 edition = "2021"
 rust-version = "1.78.0"
 authors = ["Wim Pomp <w.pomp@nki.nl>"]
