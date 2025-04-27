@@ -6,16 +6,20 @@ import pytest
 from ndbioimage import Imread
 
 
-@pytest.mark.parametrize('file',
-                         [file for file in (Path(__file__).parent / 'files').iterdir() if not file.suffix == '.pzl'])
+@pytest.mark.parametrize(
+    "file",
+    [
+        file
+        for file in (Path(__file__).parent / "files").iterdir()
+        if not file.suffix == ".pzl"
+    ],
+)
 def test_open(file):
-    with Imread(file) as im:
-        mean = im[dict(c=0, z=0, t=0)].mean()
+    with Imread(file, axes="cztyx") as im:
+        mean = im[0, 0, 0].mean()
         b = pickle.dumps(im)
         jm = pickle.loads(b)
-        assert jm[dict(c=0, z=0, t=0)].mean() == mean
-        v = im.view()
-        assert v[dict(c=0, z=0, t=0)].mean() == mean
-        b = pickle.dumps(v)
-        w = pickle.loads(b)
-        assert w[dict(c=0, z=0, t=0)].mean() == mean
+        assert jm.get_frame(0, 0, 0).mean() == mean
+        b = pickle.dumps(im)
+        jm = pickle.loads(b)
+        assert jm[0, 0, 0].mean() == mean

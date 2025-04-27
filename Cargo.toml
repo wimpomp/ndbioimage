@@ -1,6 +1,6 @@
 [package]
 name = "ndbioimage"
-version = "2025.2.3"
+version = "2025.4.0"
 edition = "2021"
 rust-version = "1.78.0"
 authors = ["Wim Pomp <w.pomp@nki.nl>"]
@@ -19,15 +19,20 @@ name = "ndbioimage"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-anyhow = "1.0.95"
+anyhow = "1.0.98"
+itertools = "0.14.0"
+indexmap = {  version = "2.9.0", features = ["serde"] }
 j4rs = "0.22.0"
-ndarray = "0.16.1"
+ndarray = {  version = "0.16.1", features = ["serde"] }
 num = "0.4.3"
-numpy = { version = "0.23.0", optional = true }
+numpy = { version = "0.24.0", optional = true }
+serde = { version = "1.0.219", features = ["rc"] }
+serde_json = { version = "1.0.140", optional = true }
+serde_with = "3.12.0"
 thread_local = "1.1.8"
 
 [dependencies.pyo3]
-version = "0.23.4"
+version = "0.24.2"
 features = ["extension-module", "abi3-py310", "generate-import-lib", "anyhow"]
 optional = true
 
@@ -35,10 +40,10 @@ optional = true
 rayon = "1.10.0"
 
 [build-dependencies]
-anyhow = "1.0.95"
+anyhow = "1.0.98"
 j4rs = "0.22.0"
-retry = "2.0.0"
+retry = "2.1.0"
 
 [features]
-python = ["dep:pyo3", "dep:numpy"]
+python = ["dep:pyo3", "dep:numpy", "dep:serde_json"]
 gpl-formats = []

@@ -74,7 +74,7 @@ use ndarray::Array2;
 use ndbioimage::Reader;
 
 let path = "/path/to/file";
-let reader = Reader::new(&path, 0).unwrap();
+let reader = Reader::new(&path, 0)?;
 println!("size: {}, {}", reader.size_y, reader.size_y);
 let frame = reader.get_frame(0, 0, 0).unwrap();
 if let Ok(arr) = <Frame as TryInto<Array2<i8>>>::try_into(frame) {
@@ -86,30 +86,22 @@ let xml = reader.get_ome_xml().unwrap();
 println!("{}", xml);
 ```
 
+``` 
+use ndarray::Array2;
+use ndbioimage::Reader;
+
+let path = "/path/to/file";
+let reader = Reader::new(&path, 0)?;
+let view = reader.view();
+let view = view.max_proj(3)?;
+let array = view.as_array::<u16>()?
+```
+
 ### Command line
 ```ndbioimage --help```: show help  
 ```ndbioimage image```: show metadata about image  
 ```ndbioimage image -w {name}.tif -r```: copy image into image.tif (replacing {name} with image), while registering channels  
 ```ndbioimage image -w image.mp4 -C cyan lime red``` copy image into image.mp4 (z will be max projected), make channel colors cyan lime and red
-
-## Adding more formats
-Readers for image formats subclass AbstractReader. When an image reader is imported, Imread will
-automatically recognize it and use it to open the appropriate file format. Image readers
-are required to implement the following methods:
-
-- staticmethod _can_open(path): return True if path can be opened by this reader
-- \_\_frame__(self, c, z, t): return the frame at channel=c, z-slice=z, time=t from the file
-
-Optional methods:
-- get_ome: reads metadata from file and adds them to an OME object imported
-  from the ome-types library
-- open(self): maybe open some file handle
-- close(self): close any file handles
-
-Optional fields:
-- priority (int): Imread will try readers with a lower number first, default: 99
-- do_not_pickle (strings): any attributes that should not be included when the object is pickled,
-  for example: any file handles
 
 # TODO
 - more image formats

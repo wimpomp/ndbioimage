@@ -21,7 +21,7 @@ except ImportError:
     DataFrame, Series, concat = None, None, None
 
 
-if hasattr(yaml, 'full_load'):
+if hasattr(yaml, "full_load"):
     yamlload = yaml.full_load
 else:
     yamlload = yaml.load
@@ -34,7 +34,7 @@ class Transforms(dict):
 
     @classmethod
     def from_file(cls, file, C=True, T=True):
-        with open(Path(file).with_suffix('.yml')) as f:
+        with open(Path(file).with_suffix(".yml")) as f:
             return cls.from_dict(yamlload(f), C, T)
 
     @classmethod
@@ -42,7 +42,9 @@ class Transforms(dict):
         new = cls()
         for key, value in d.items():
             if isinstance(key, str) and C:
-                new[key.replace(r'\:', ':').replace('\\\\', '\\')] = Transform.from_dict(value)
+                new[key.replace(r"\:", ":").replace("\\\\", "\\")] = (
+                    Transform.from_dict(value)
+                )
             elif T:
                 new[key] = Transform.from_dict(value)
         return new
@@ -69,11 +71,19 @@ class Transforms(dict):
             return new
 
     def asdict(self):
-        return {key.replace('\\', '\\\\').replace(':', r'\:') if isinstance(key, str) else key: value.asdict()
-                for key, value in self.items()}
+        return {
+            key.replace("\\", "\\\\").replace(":", r"\:")
+            if isinstance(key, str)
+            else key: value.asdict()
+            for key, value in self.items()
+        }
 
     def __getitem__(self, item):
-        return np.prod([self[i] for i in item[::-1]]) if isinstance(item, tuple) else super().__getitem__(item)
+        return (
+            np.prod([self[i] for i in item[::-1]])
+            if isinstance(item, tuple)
+            else super().__getitem__(item)
+        )
 
     def __missing__(self, key):
         return self.default
@@ -88,7 +98,7 @@ class Transforms(dict):
         return hash(frozenset((*self.__dict__.items(), *self.items())))
 
     def save(self, file):
-        with open(Path(file).with_suffix('.yml'), 'w') as f:
+        with open(Path(file).with_suffix(".yml"), "w") as f:
             yaml.safe_dump(self.asdict(), f, default_flow_style=None)
 
     def copy(self):
@@ -109,8 +119,10 @@ class Transforms(dict):
         transform_channels = {key for key in self.keys() if isinstance(key, str)}
         if set(channel_names) - transform_channels:
             mapping = key_map(channel_names, transform_channels)
-            warnings.warn(f'The image file and the transform do not have the same channels,'
-                          f' creating a mapping: {mapping}')
+            warnings.warn(
+                f"The image file and the transform do not have the same channels,"
+                f" creating a mapping: {mapping}"
+            )
             for key_im, key_t in mapping.items():
                 self[key_im] = self[key_t]
 
@@ -124,37 +136,54 @@ class Transforms(dict):
 
     def coords_pandas(self, array, channel_names, columns=None):
         if isinstance(array, DataFrame):
-            return concat([self.coords_pandas(row, channel_names, columns) for _, row in array.iterrows()], axis=1).T
+            return concat(
+                [
+                    self.coords_pandas(row, channel_names, columns)
+                    for _, row in array.iterrows()
+                ],
+                axis=1,
+            ).T
         elif isinstance(array, Series):
             key = []
-            if 'C' in array:
-                key.append(channel_names[int(array['C'])])
-            if 'T' in array:
-                key.append(int(array['T']))
+            if "C" in array:
+                key.append(channel_names[int(array["C"])])
+            if "T" in array:
+                key.append(int(array["T"]))
             return self[tuple(key)].coords(array, columns)
         else:
-            raise TypeError('Not a pandas DataFrame or Series.')
+            raise TypeError("Not a pandas DataFrame or Series.")
 
     def with_beads(self, cyllens, bead_files):
-        assert len(bead_files) > 0, 'At least one file is needed to calculate the registration.'
-        transforms = [self.calculate_channel_transforms(file, cyllens) for file in bead_files]
+        assert len(bead_files) > 0, (
+            "At least one file is needed to calculate the registration."
+        )
+        transforms = [
+            self.calculate_channel_transforms(file, cyllens) for file in bead_files
+        ]
         for key in {key for transform in transforms for key in transform.keys()}:
-            new_transforms = [transform[key] for transform in transforms if key in transform]
+            new_transforms = [
+                transform[key] for transform in transforms if key in transform
+            ]
             if len(new_transforms) == 1:
                 self[key] = new_transforms[0]
             else:
                 self[key] = Transform()
-                self[key].parameters = np.mean([t.parameters for t in new_transforms], 0)
-                self[key].dparameters = (np.std([t.parameters for t in new_transforms], 0) /
-                                        np.sqrt(len(new_transforms))).tolist()
+                self[key].parameters = np.mean(
+                    [t.parameters for t in new_transforms], 0
+                )
+                self[key].dparameters = (
+                    np.std([t.parameters for t in new_transforms], 0)
+                    / np.sqrt(len(new_transforms))
+                ).tolist()
         return self
 
     @staticmethod
     def get_bead_files(path):
         from . import Imread
+
         files = []
         for file in path.iterdir():
-            if file.name.lower().startswith('beads'):
+            if file.name.lower().startswith("beads"):
                 try:
                     with Imread(file):
                         files.append(file)
@@ -162,32 +191,36 @@ class Transforms(dict):
                     pass
         files = sorted(files)
         if not files:
-            raise Exception('No bead file found!')
+            raise Exception("No bead file found!")
         checked_files = []
         for file in files:
             try:
                 if file.is_dir():
-                    file /= 'Pos0'
+                    file /= "Pos0"
                 with Imread(file):  # check for errors opening the file
                     checked_files.append(file)
             except (Exception,):
                 continue
         if not checked_files:
-            raise Exception('No bead file found!')
+            raise Exception("No bead file found!")
         return checked_files
 
     @staticmethod
     def calculate_channel_transforms(bead_file, cyllens):
-        """ When no channel is not transformed by a cylindrical lens, assume that the image is scaled by a factor 1.162
-            in the horizontal direction """
+        """When no channel is not transformed by a cylindrical lens, assume that the image is scaled by a factor 1.162
+        in the horizontal direction"""
         from . import Imread
 
-        with Imread(bead_file, axes='zcyx') as im:  # noqa
-            max_ims = im.max('z')
+        with Imread(bead_file, axes="zcyx") as im:  # noqa
+            max_ims = im.max("z")
             goodch = [c for c, max_im in enumerate(max_ims) if not im.is_noise(max_im)]
             if not goodch:
                 goodch = list(range(len(max_ims)))
-            untransformed = [c for c in range(im.shape['c']) if cyllens[im.detector[c]].lower() == 'none']
+            untransformed = [
+                c
+                for c in range(im.shape["c"])
+                if cyllens[im.detector[c]].lower() == "none"
+            ]
 
             good_and_untrans = sorted(set(goodch) & set(untransformed))
             if good_and_untrans:
@@ -200,54 +233,81 @@ class Transforms(dict):
                 matrix[0, 0] = 0.86
                 transform.matrix = matrix
             transforms = Transforms()
-            for c in tqdm(goodch, desc='Calculating channel transforms'):  # noqa
+            for c in tqdm(goodch, desc="Calculating channel transforms"):  # noqa
                 if c == masterch:
                     transforms[im.channel_names[c]] = transform
                 else:
-                    transforms[im.channel_names[c]] = Transform.register(max_ims[masterch], max_ims[c]) * transform
+                    transforms[im.channel_names[c]] = (
+                        Transform.register(max_ims[masterch], max_ims[c]) * transform
+                    )
         return transforms
 
     @staticmethod
     def save_channel_transform_tiff(bead_files, tiffile):
         from . import Imread
+
         n_channels = 0
         for file in bead_files:
             with Imread(file) as im:
-                n_channels = max(n_channels, im.shape['c'])
+                n_channels = max(n_channels, im.shape["c"])
         with IJTiffFile(tiffile) as tif:
             for t, file in enumerate(bead_files):
                 with Imread(file) as im:
                     with Imread(file).with_transform() as jm:
-                        for c in range(im.shape['c']):
-                            tif.save(np.hstack((im(c=c, t=0).max('z'), jm(c=c, t=0).max('z'))), c, 0, t)
+                        for c in range(im.shape["c"]):
+                            tif.save(
+                                np.hstack(
+                                    (im(c=c, t=0).max("z"), jm(c=c, t=0).max("z"))
+                                ),
+                                c,
+                                0,
+                                t,
+                            )
 
     def with_drift(self, im):
-        """ Calculate shifts relative to the first frame
-            divide the sequence into groups,
-            compare each frame to the frame in the middle of the group and compare these middle frames to each other
+        """Calculate shifts relative to the first frame
+        divide the sequence into groups,
+        compare each frame to the frame in the middle of the group and compare these middle frames to each other
         """
-        im = im.transpose('tzycx')
-        t_groups = [list(chunk) for chunk in Chunks(range(im.shape['t']), size=round(np.sqrt(im.shape['t'])))]
+        im = im.transpose("tzycx")
+        t_groups = [
+            list(chunk)
+            for chunk in Chunks(
+                range(im.shape["t"]), size=round(np.sqrt(im.shape["t"]))
+            )
+        ]
         t_keys = [int(np.round(np.mean(t_group))) for t_group in t_groups]
-        t_pairs = [(int(np.round(np.mean(t_group))), frame) for t_group in t_groups for frame in t_group]
+        t_pairs = [
+            (int(np.round(np.mean(t_group))), frame)
+            for t_group in t_groups
+            for frame in t_group
+        ]
         t_pairs.extend(zip(t_keys, t_keys[1:]))
-        fmaxz_keys = {t_key: filters.gaussian(im[t_key].max('z'), 5) for t_key in t_keys}
+        fmaxz_keys = {
+            t_key: filters.gaussian(im[t_key].max("z"), 5) for t_key in t_keys
+        }
 
         def fun(t_key_t, im, fmaxz_keys):
             t_key, t = t_key_t
             if t_key == t:
                 return 0, 0
             else:
-                fmaxz = filters.gaussian(im[t].max('z'), 5)
-                return Transform.register(fmaxz_keys[t_key], fmaxz, 'translation').parameters[4:]
+                fmaxz = filters.gaussian(im[t].max("z"), 5)
+                return Transform.register(
+                    fmaxz_keys[t_key], fmaxz, "translation"
+                ).parameters[4:]
 
-        shifts = np.array(pmap(fun, t_pairs, (im, fmaxz_keys), desc='Calculating image shifts.'))
+        shifts = np.array(
+            pmap(fun, t_pairs, (im, fmaxz_keys), desc="Calculating image shifts.")
+        )
         shift_keys_cum = np.zeros(2)
-        for shift_keys, t_group in zip(np.vstack((-shifts[0], shifts[im.shape['t']:])), t_groups):
+        for shift_keys, t_group in zip(
+            np.vstack((-shifts[0], shifts[im.shape["t"] :])), t_groups
+        ):
             shift_keys_cum += shift_keys
             shifts[t_group] += shift_keys_cum
 
-        for i, shift in enumerate(shifts[:im.shape['t']]):
+        for i, shift in enumerate(shifts[: im.shape["t"]]):
             self[i] = Transform.from_shift(shift)
         return self
 
@@ -257,9 +317,11 @@ class Transform:
         if sitk is None:
             self.transform = None
         else:
-            self.transform = sitk.ReadTransform(str(Path(__file__).parent / 'transform.txt'))
-        self.dparameters = [0., 0., 0., 0., 0., 0.]
-        self.shape = [512., 512.]
+            self.transform = sitk.ReadTransform(
+                str(Path(__file__).parent / "transform.txt")
+            )
+        self.dparameters = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        self.shape = [512.0, 512.0]
         self.origin = [255.5, 255.5]
         self._last, self._inverse = None, None
 
@@ -274,12 +336,14 @@ class Transform:
 
     @classmethod
     def register(cls, fix, mov, kind=None):
-        """ kind: 'affine', 'translation', 'rigid' """
+        """kind: 'affine', 'translation', 'rigid'"""
         if sitk is None:
-            raise ImportError('SimpleElastix is not installed: '
-                              'https://simpleelastix.readthedocs.io/GettingStarted.html')
+            raise ImportError(
+                "SimpleElastix is not installed: "
+                "https://simpleelastix.readthedocs.io/GettingStarted.html"
+            )
         new = cls()
-        kind = kind or 'affine'
+        kind = kind or "affine"
         new.shape = fix.shape
         fix, mov = new.cast_image(fix), new.cast_image(mov)
         # TODO: implement RigidTransform
@@ -290,16 +354,18 @@ class Transform:
         tfilter.SetParameterMap(sitk.GetDefaultParameterMap(kind))
         tfilter.Execute()
         transform = tfilter.GetTransformParameterMap()[0]
-        if kind == 'affine':
-            new.parameters = [float(t) for t in transform['TransformParameters']]
-            new.shape = [float(t) for t in transform['Size']]
-            new.origin = [float(t) for t in transform['CenterOfRotationPoint']]
-        elif kind == 'translation':
-            new.parameters = [1.0, 0.0, 0.0, 1.0] + [float(t) for t in transform['TransformParameters']]
-            new.shape = [float(t) for t in transform['Size']]
+        if kind == "affine":
+            new.parameters = [float(t) for t in transform["TransformParameters"]]
+            new.shape = [float(t) for t in transform["Size"]]
+            new.origin = [float(t) for t in transform["CenterOfRotationPoint"]]
+        elif kind == "translation":
+            new.parameters = [1.0, 0.0, 0.0, 1.0] + [
+                float(t) for t in transform["TransformParameters"]
+            ]
+            new.shape = [float(t) for t in transform["Size"]]
             new.origin = [(t - 1) / 2 for t in new.shape]
         else:
-            raise NotImplementedError(f'{kind} tranforms not implemented (yet)')
+            raise NotImplementedError(f"{kind} tranforms not implemented (yet)")
         new.dparameters = 6 * [np.nan]
         return new
 
@@ -315,18 +381,35 @@ class Transform:
 
     @classmethod
     def from_file(cls, file):
-        with open(Path(file).with_suffix('.yml')) as f:
+        with open(Path(file).with_suffix(".yml")) as f:
             return cls.from_dict(yamlload(f))
 
     @classmethod
     def from_dict(cls, d):
         new = cls()
-        new.origin = None if d['CenterOfRotationPoint'] is None else [float(i) for i in d['CenterOfRotationPoint']]
-        new.parameters = ((1., 0., 0., 1., 0., 0.) if d['TransformParameters'] is None else
-                          [float(i) for i in d['TransformParameters']])
-        new.dparameters = ([(0., 0., 0., 0., 0., 0.) if i is None else float(i) for i in d['dTransformParameters']]
-                           if 'dTransformParameters' in d else 6 * [np.nan] and d['dTransformParameters'] is not None)
-        new.shape = None if d['Size'] is None else [None if i is None else float(i) for i in d['Size']]
+        new.origin = (
+            None
+            if d["CenterOfRotationPoint"] is None
+            else [float(i) for i in d["CenterOfRotationPoint"]]
+        )
+        new.parameters = (
+            (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+            if d["TransformParameters"] is None
+            else [float(i) for i in d["TransformParameters"]]
+        )
+        new.dparameters = (
+            [
+                (0.0, 0.0, 0.0, 0.0, 0.0, 0.0) if i is None else float(i)
+                for i in d["dTransformParameters"]
+            ]
+            if "dTransformParameters" in d
+            else 6 * [np.nan] and d["dTransformParameters"] is not None
+        )
+        new.shape = (
+            None
+            if d["Size"] is None
+            else [None if i is None else float(i) for i in d["Size"]]
+        )
         return new
 
     def __mul__(self, other):  # TODO: take care of dmatrix
@@ -359,9 +442,13 @@ class Transform:
 
     @property
     def matrix(self):
-        return np.array(((*self.parameters[:2], self.parameters[4]),
-                         (*self.parameters[2:4], self.parameters[5]),
-                         (0, 0, 1)))
+        return np.array(
+            (
+                (*self.parameters[:2], self.parameters[4]),
+                (*self.parameters[2:4], self.parameters[5]),
+                (0, 0, 1),
+            )
+        )
 
     @matrix.setter
     def matrix(self, value):
@@ -370,9 +457,13 @@ class Transform:
 
     @property
     def dmatrix(self):
-        return np.array(((*self.dparameters[:2], self.dparameters[4]),
-                         (*self.dparameters[2:4], self.dparameters[5]),
-                         (0, 0, 0)))
+        return np.array(
+            (
+                (*self.dparameters[:2], self.dparameters[4]),
+                (*self.dparameters[2:4], self.dparameters[5]),
+                (0, 0, 0),
+            )
+        )
 
     @dmatrix.setter
     def dmatrix(self, value):
@@ -384,7 +475,7 @@ class Transform:
         if self.transform is not None:
             return list(self.transform.GetParameters())
         else:
-            return [1., 0., 0., 1., 0., 0.]
+            return [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
 
     @parameters.setter
     def parameters(self, value):
@@ -420,43 +511,62 @@ class Transform:
         self.shape = shape[:2]
 
     def asdict(self):
-        return {'CenterOfRotationPoint': self.origin, 'Size': self.shape, 'TransformParameters': self.parameters,
-                'dTransformParameters': np.nan_to_num(self.dparameters, nan=1e99).tolist()}
+        return {
+            "CenterOfRotationPoint": self.origin,
+            "Size": self.shape,
+            "TransformParameters": self.parameters,
+            "dTransformParameters": np.nan_to_num(self.dparameters, nan=1e99).tolist(),
+        }
 
     def frame(self, im, default=0):
         if self.is_unity():
             return im
         else:
             if sitk is None:
-                raise ImportError('SimpleElastix is not installed: '
-                                  'https://simpleelastix.readthedocs.io/GettingStarted.html')
+                raise ImportError(
+                    "SimpleElastix is not installed: "
+                    "https://simpleelastix.readthedocs.io/GettingStarted.html"
+                )
             dtype = im.dtype
-            im = im.astype('float')
-            intp = sitk.sitkBSpline if np.issubdtype(dtype, np.floating) else sitk.sitkNearestNeighbor
-            return self.cast_array(sitk.Resample(self.cast_image(im), self.transform, intp, default)).astype(dtype)
+            im = im.astype("float")
+            intp = (
+                sitk.sitkBSpline
+                if np.issubdtype(dtype, np.floating)
+                else sitk.sitkNearestNeighbor
+            )
+            return self.cast_array(
+                sitk.Resample(self.cast_image(im), self.transform, intp, default)
+            ).astype(dtype)
 
     def coords(self, array, columns=None):
-        """ Transform coordinates in 2 column numpy array,
-            or in pandas DataFrame or Series objects in columns ['x', 'y']
+        """Transform coordinates in 2 column numpy array,
+        or in pandas DataFrame or Series objects in columns ['x', 'y']
         """
         if self.is_unity():
             return array.copy()
         elif DataFrame is not None and isinstance(array, (DataFrame, Series)):
-            columns = columns or ['x', 'y']
+            columns = columns or ["x", "y"]
             array = array.copy()
             if isinstance(array, DataFrame):
                 array[columns] = self.coords(np.atleast_2d(array[columns].to_numpy()))
             elif isinstance(array, Series):
-                array[columns] = self.coords(np.atleast_2d(array[columns].to_numpy()))[0]
+                array[columns] = self.coords(np.atleast_2d(array[columns].to_numpy()))[
+                    0
+                ]
             return array
         else:  # somehow we need to use the inverse here to get the same effect as when using self.frame
-            return np.array([self.inverse.transform.TransformPoint(i.tolist()) for i in np.asarray(array)])
+            return np.array(
+                [
+                    self.inverse.transform.TransformPoint(i.tolist())
+                    for i in np.asarray(array)
+                ]
+            )
 
     def save(self, file):
-        """ save the parameters of the transform calculated
-            with affine_registration to a yaml file
+        """save the parameters of the transform calculated
+        with affine_registration to a yaml file
         """
-        if not file[-3:] == 'yml':
-            file += '.yml'
-        with open(file, 'w') as f:
+        if not file[-3:] == "yml":
+            file += ".yml"
+        with open(file, "w") as f:
             yaml.safe_dump(self.asdict(), f, default_flow_style=None)

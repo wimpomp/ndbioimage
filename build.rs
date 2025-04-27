@@ -8,7 +8,7 @@ use retry::{delay, delay::Exponential, retry};
 use j4rs::Jvm;
 
 fn main() -> anyhow::Result<()> {
-    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo::rerun-if-changed=build.rs");
 
     #[cfg(not(feature = "python"))]
     if std::env::var("DOCS_RS").is_err() {

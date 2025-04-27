@@ -96,6 +96,18 @@ macro_rules! method {
     };
 }
 
+fn transmute_vec<T, U>(vec: Vec<T>) -> Vec<U> {
+    unsafe {
+        // Ensure the original vector is not dropped.
+        let mut v_clone = std::mem::ManuallyDrop::new(vec);
+        Vec::from_raw_parts(
+            v_clone.as_mut_ptr() as *mut U,
+            v_clone.len(),
+            v_clone.capacity(),
+        )
+    }
+}
+
 /// Wrapper around bioformats java class loci.common.DebugTools
 pub struct DebugTools;
 
@@ -125,8 +137,7 @@ impl ChannelSeparator {
     }
 
     pub(crate) fn open_bytes(&self, index: i32) -> Result<Vec<u8>> {
-        let bi8 = self.open_bi8(index)?;
-        Ok(unsafe { std::mem::transmute::<Vec<i8>, Vec<u8>>(bi8) })
+        Ok(transmute_vec(self.open_bi8(index)?))
     }
 
     method!(open_bi8, "openBytes", [index: i32|p] => Vec<i8>|c);
@@ -149,8 +160,7 @@ impl ImageReader {
     }
 
     pub(crate) fn open_bytes(&self, index: i32) -> Result<Vec<u8>> {
-        let bi8 = self.open_bi8(index)?;
-        Ok(unsafe { std::mem::transmute::<Vec<i8>, Vec<u8>>(bi8) })
+        Ok(transmute_vec(self.open_bi8(index)?))
     }
 
     pub(crate) fn ome_xml(&self) -> Result<String> {
