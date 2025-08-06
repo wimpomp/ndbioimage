@@ -11,8 +11,9 @@ im = Imread(r)
 a = np.array(im)
 
 
-@pytest.mark.parametrize('s', combinations_with_replacement(
-    (0, -1, 1, slice(None), slice(0, 1), slice(-1, 0), slice(1, 1)), 5))
+@pytest.mark.parametrize(
+    "s", combinations_with_replacement((0, -1, 1, slice(None), slice(0, 1), slice(-1, 0), slice(1, 1)), 5)
+)
 def test_slicing(s):
     s_im, s_a = im[s], a[s]
     if isinstance(s_a, Number):

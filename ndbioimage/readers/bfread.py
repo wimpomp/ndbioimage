@@ -8,13 +8,15 @@ import numpy as np
 
 from .. import JVM, AbstractReader, JVMException
 
-jars = {'bioformats_package.jar': 'https://downloads.openmicroscopy.org/bio-formats/latest/artifacts/'
-                                  'bioformats_package.jar'}
+jars = {
+    "bioformats_package.jar": "https://downloads.openmicroscopy.org/bio-formats/latest/artifacts/"
+    "bioformats_package.jar"
+}
 
 
 class JVMReader:
     def __init__(self, path: Path, series: int) -> None:
-        mp = multiprocessing.get_context('spawn')
+        mp = multiprocessing.get_context("spawn")
         self.path = path
         self.series = series
         self.queue_in = mp.Queue()
@@ -23,7 +25,7 @@ class JVMReader:
         self.process = mp.Process(target=self.run)
         self.process.start()
         status, message = self.queue_out.get()
-        if status == 'status' and message == 'started':
+        if status == "status" and message == "started":
             self.is_alive = True
         else:
             raise JVMException(message)
@@ -45,14 +47,14 @@ class JVMReader:
     def frame(self, c: int, z: int, t: int) -> np.ndarray:
         self.queue_in.put((c, z, t))
         status, message = self.queue_out.get()
-        if status == 'frame':
+        if status == "frame":
             return message
         else:
             raise JVMException(message)
 
     def run(self) -> None:
-        """ Read planes from the image reader file.
-            adapted from python-bioformats/bioformats/formatreader.py
+        """Read planes from the image reader file.
+        adapted from python-bioformats/bioformats/formatreader.py
         """
         jvm = None
         try:
@@ -74,20 +76,20 @@ class JVMReader:
             elif pixel_type == jvm.format_tools.UINT8:
                 dtype = np.uint8
             elif pixel_type == jvm.format_tools.UINT16:
-                dtype = '<u2' if little_endian else '>u2'
+                dtype = "<u2" if little_endian else ">u2"
             elif pixel_type == jvm.format_tools.INT16:
-                dtype = '<i2' if little_endian else '>i2'
+                dtype = "<i2" if little_endian else ">i2"
             elif pixel_type == jvm.format_tools.UINT32:
-                dtype = '<u4' if little_endian else '>u4'
+                dtype = "<u4" if little_endian else ">u4"
             elif pixel_type == jvm.format_tools.INT32:
-                dtype = '<i4' if little_endian else '>i4'
+                dtype = "<i4" if little_endian else ">i4"
             elif pixel_type == jvm.format_tools.FLOAT:
-                dtype = '<f4' if little_endian else '>f4'
+                dtype = "<f4" if little_endian else ">f4"
             elif pixel_type == jvm.format_tools.DOUBLE:
-                dtype = '<f8' if little_endian else '>f8'
+                dtype = "<f8" if little_endian else ">f8"
             else:
                 dtype = None
-            self.queue_out.put(('status', 'started'))
+            self.queue_out.put(("status", "started"))
 
             while not self.done.is_set():
                 try:
@@ -116,8 +118,10 @@ class JVMReader:
                         image.shape = (height, width, 3)
                         del rdr
                     elif reader.getSizeC() > 1:
-                        images = [np.frombuffer(open_bytes_func(reader.getIndex(z, i, t)), dtype)
-                                  for i in range(reader.getSizeC())]
+                        images = [
+                            np.frombuffer(open_bytes_func(reader.getIndex(z, i, t)), dtype)
+                            for i in range(reader.getSizeC())
+                        ]
                         image = np.dstack(images)
                         image.shape = (height, width, reader.getSizeC())
                         # if not channel_names is None:
@@ -161,13 +165,13 @@ class JVMReader:
                         image.shape = (height, width)
 
                     if image.ndim == 3:
-                        self.queue_out.put(('frame', image[..., c]))
+                        self.queue_out.put(("frame", image[..., c]))
                     else:
-                        self.queue_out.put(('frame', image))
+                        self.queue_out.put(("frame", image))
                 except queues.Empty:  # noqa
                     continue
         except (Exception,):
-            self.queue_out.put(('error', format_exc()))
+            self.queue_out.put(("error", format_exc()))
         finally:
             if jvm is not None:
                 jvm.kill_vm()
@@ -186,16 +190,17 @@ def can_open(path: Path) -> bool:
 
 
 class Reader(AbstractReader, ABC):
-    """ This class is used as a last resort, when we don't have another way to open the file. We don't like it
-        because it requires the java vm.
+    """This class is used as a last resort, when we don't have another way to open the file. We don't like it
+    because it requires the java vm.
     """
+
     priority = 99  # panic and open with BioFormats
-    do_not_pickle = 'reader', 'key', 'jvm'
+    do_not_pickle = "reader", "key", "jvm"
 
     @staticmethod
     def _can_open(path: Path) -> bool:
-        """ Use java BioFormats to make an ome metadata structure. """
-        with multiprocessing.get_context('spawn').Pool(1) as pool:
+        """Use java BioFormats to make an ome metadata structure."""
+        with multiprocessing.get_context("spawn").Pool(1) as pool:
             return pool.map(can_open, (path,))[0]
 
     def open(self) -> None:

@@ -1,6 +1,6 @@
 [project]
 name = "ndbioimage"
-version = "2025.3.2"
+version = "2025.8.0"
 description = "Bio image reading, metadata and some affine registration."
 authors = [
     { name = "W. Pomp", email = "w.pomp@nki.nl" }
@@ -15,7 +15,6 @@ exclude = ["ndbioimage/jars"]
 dependencies = [
     "czifile == 2019.7.2",
     "imagecodecs",
-    "JPype1",
     "lxml",
     "numpy >= 1.20",
     "ome-types",
@@ -33,6 +32,7 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest"]
 write = ["matplotlib", "scikit-video"]
+bioformats = ["JPype1"]
 
 [project.urls]
 repository = "https://github.com/wimpomp/ndbioimage"
@@ -45,6 +45,10 @@ filterwarnings = ["ignore:::(colorcet)"]
 
 [tool.isort]
 line_length = 119
+
+[tool.ruff]
+line-length = 119
+indent-width = 4
 
 [build-system]
 requires = ["poetry-core"]

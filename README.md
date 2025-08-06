@@ -13,16 +13,18 @@ Currently, it supports imagej tif files, czi files, micromanager tif sequences a
 
 ## Installation
 
+One of:
+
 ```
 pip install ndbioimage
-```
-
-### Installation with option to write mp4 or mkv:
-Work in progress! Make sure ffmpeg is installed.
-
-```
+pip install ndbioimage[bioformats]
 pip install ndbioimage[write]
+pip install ndbioimage[bioformats, write]
 ```
+
+- bioformats: use [bio-formats](https://www.openmicroscopy.org/bio-formats/)
+as fallback when other readers cannot open a file.
+- write: write an image file into a mp4 or mkv file. Work in progress! Make sure ffmpeg is installed.
 
 ## Usage
 ### Python

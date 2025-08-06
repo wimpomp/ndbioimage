@@ -7,7 +7,7 @@ import pytest
 from ndbioimage import Imread, ReaderNotFoundError
 
 
-@pytest.mark.parametrize('file', (Path(__file__).parent / 'files').iterdir())
+@pytest.mark.parametrize("file", (Path(__file__).parent / "files").iterdir())
 def test_open(file):
     try:
         with Imread(file) as im:
@@ -21,7 +21,7 @@ def test_open(file):
             w = pickle.loads(b)
             assert w[dict(c=0, z=0, t=0)].mean() == mean
     except ReaderNotFoundError:
-        assert len(Imread.__subclasses__()), 'No subclasses for Imread found.'
+        assert len(Imread.__subclasses__()), "No subclasses for Imread found."
 
     for child in active_children():
         child.kill()

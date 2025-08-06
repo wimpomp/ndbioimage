@@ -12,16 +12,17 @@ from .. import AbstractReader
 
 class Reader(AbstractReader, ABC):
     priority = 20
-    do_not_pickle = 'last_tif'
+    do_not_pickle = "last_tif"
 
     @staticmethod
     def _can_open(path):
-        return isinstance(path, Path) and (path.is_dir() or
-                                           (path.parent.is_dir() and path.name.lower().startswith('pos')))
+        return isinstance(path, Path) and (
+            path.is_dir() or (path.parent.is_dir() and path.name.lower().startswith("pos"))
+        )
 
     @staticmethod
     def get_positions(path: str | Path) -> Optional[list[int]]:
-        pat = re.compile(rf's(\d)_t\d+\.(tif|TIF)$')
+        pat = re.compile(rf"s(\d)_t\d+\.(tif|TIF)$")
         return sorted({int(m.group(1)) for file in Path(path).iterdir() if (m := pat.search(file.name))})
 
     def get_ome(self):
@@ -31,7 +32,7 @@ class Reader(AbstractReader, ABC):
         size_z = len(tif.pages)
         page = tif.pages[0]
         shape = {axis.lower(): size for axis, size in zip(page.axes, page.shape)}
-        size_x, size_y = shape['x'], shape['y']
+        size_x, size_y = shape["x"], shape["y"]
 
         ome.instruments.append(model.Instrument())
 
@@ -41,16 +42,23 @@ class Reader(AbstractReader, ABC):
         ome.images.append(
             model.Image(
                 pixels=model.Pixels(
-                    size_c=size_c, size_z=size_z, size_t=size_t,
-                    size_x=size_x, size_y=size_y,
-                    dimension_order='XYCZT', type=pixel_type),
-                objective_settings=model.ObjectiveSettings(id='Objective:0')))
+                    size_c=size_c,
+                    size_z=size_z,
+                    size_t=size_t,
+                    size_x=size_x,
+                    size_y=size_y,
+                    dimension_order="XYCZT",
+                    type=pixel_type,
+                ),
+                objective_settings=model.ObjectiveSettings(id="Objective:0"),
+            )
+        )
         return ome
 
     def open(self):
-        pat = re.compile(rf's{self.series}_t\d+\.(tif|TIF)$')
+        pat = re.compile(rf"s{self.series}_t\d+\.(tif|TIF)$")
         filelist = sorted([file for file in self.path.iterdir() if pat.search(file.name)])
-        pattern = re.compile(r't(\d+)$')
+        pattern = re.compile(r"t(\d+)$")
         self.filedict = {int(pattern.search(file.stem).group(1)) - 1: file for file in filelist}
         if len(self.filedict) == 0:
             raise FileNotFoundError
@@ -72,9 +80,9 @@ class Reader(AbstractReader, ABC):
     def __frame__(self, c=0, z=0, t=0):
         tif = self.get_tif(t)
         page = tif.pages[z]
-        if page.axes.upper() == 'YX':
+        if page.axes.upper() == "YX":
             return page.asarray()
-        elif page.axes.upper() == 'XY':
+        elif page.axes.upper() == "XY":
             return page.asarray().T
         else:
-            raise NotImplementedError(f'reading axes {page.axes} is not implemented')
+            raise NotImplementedError(f"reading axes {page.axes} is not implemented")
