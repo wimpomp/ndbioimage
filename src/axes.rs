@@ -1,8 +1,9 @@
 use crate::stats::MinMax;
-use anyhow::{anyhow, Error, Result};
+use anyhow::{Error, Result, anyhow};
 use ndarray::{Array, Dimension, Ix2, SliceInfo, SliceInfoElem};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{DeserializeAs, SerializeAs};
+use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 
@@ -51,6 +52,20 @@ impl FromStr for Axis {
     }
 }
 
+impl Display for Axis {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Axis::C => "C",
+            Axis::Z => "Z",
+            Axis::T => "T",
+            Axis::Y => "Y",
+            Axis::X => "X",
+            Axis::New => "N",
+        };
+        write!(f, "{}", s)
+    }
+}
+
 impl Ax for Axis {
     fn n(&self) -> usize {
         *self as usize
@@ -60,7 +75,10 @@ impl Ax for Axis {
         if let Some(pos) = axes.iter().position(|a| a == self) {
             Ok(pos)
         } else {
-            Err(Error::msg("Axis not found in axes"))
+            Err(Error::msg(format!(
+                "Axis {:?} not found in axes {:?}",
+                self, axes
+            )))
         }
     }
 
@@ -96,7 +114,7 @@ impl Ax for usize {
                 }
             })
             .collect();
-        assert!(*self < idx.len(), "self: {}, idx: {:?}", self, idx);
+        debug_assert!(*self < idx.len(), "self: {}, idx: {:?}", self, idx);
         Ok(idx[*self])
     }
 }

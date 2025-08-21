@@ -27,16 +27,9 @@ classifiers = [
 dynamic = ["version"]
 dependencies = [
     "numpy",
-    "pandas",
     "tiffwrite",
-    "ome-types",
-    "pint",
+    "ome-metadata >= 0.2.1",
     "tqdm",
-    "lxml",
-    "pyyaml",
-    "parfor",
-    "SimpleITK-SimpleElastix",
-    "scikit-image",
 ]
 
 [project.optional-dependencies]

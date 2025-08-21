@@ -2,9 +2,10 @@ use crate::axes::Axis;
 use crate::bioformats;
 use crate::bioformats::{DebugTools, ImageReader, MetadataTools};
 use crate::view::View;
-use anyhow::{anyhow, Error, Result};
-use ndarray::{s, Array2, Ix5};
+use anyhow::{Error, Result, anyhow};
+use ndarray::{Array2, Ix5, s};
 use num::{FromPrimitive, Zero};
+use ome_metadata::Ome;
 use serde::{Deserialize, Serialize};
 use std::any::type_name;
 use std::fmt::Debug;
@@ -13,6 +14,26 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 use thread_local::ThreadLocal;
+
+pub fn split_path_and_series<P>(path: P) -> Result<(PathBuf, Option<usize>)>
+where
+    P: Into<PathBuf>,
+{
+    let path = path.into();
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| anyhow!("No file name"))?
+        .to_str()
+        .ok_or_else(|| anyhow!("No file name"))?;
+    if file_name.to_lowercase().starts_with("pos") {
+        if let Some(series) = file_name.get(3..) {
+            if let Ok(series) = series.parse::<usize>() {
+                return Ok((path, Some(series)));
+            }
+        }
+    }
+    Ok((path, None))
+}
 
 /// Pixel types (u)int(8/16/32) or float(32/64), (u/i)(64/128) are not included in bioformats
 #[allow(clippy::upper_case_acronyms)]
@@ -228,7 +249,7 @@ pub struct Reader {
     /// path to file
     pub path: PathBuf,
     /// which (if more than 1) of the series in the file to open
-    pub series: i32,
+    pub series: usize,
     /// size x (horizontal)
     pub size_x: usize,
     /// size y (vertical)
@@ -254,7 +275,7 @@ impl Deref for Reader {
             let ome_meta = meta_data_tools.create_ome_xml_metadata().unwrap();
             reader.set_metadata_store(ome_meta).unwrap();
             reader.set_id(self.path.to_str().unwrap()).unwrap();
-            reader.set_series(self.series).unwrap();
+            reader.set_series(self.series as i32).unwrap();
             reader
         })
     }
@@ -284,11 +305,14 @@ impl Debug for Reader {
 
 impl Reader {
     /// Create a new reader for the image file at a path, and open series #.
-    pub fn new(path: &Path, series: i32) -> Result<Self> {
+    pub fn new<P>(path: P, series: usize) -> Result<Self>
+    where
+        P: AsRef<Path>,
+    {
         DebugTools::set_root_level("ERROR")?;
         let mut reader = Reader {
             image_reader: ThreadLocal::default(),
-            path: PathBuf::from(path),
+            path: path.as_ref().to_path_buf(),
             series,
             size_x: 0,
             size_y: 0,
@@ -306,6 +330,17 @@ impl Reader {
         reader.pixel_type = PixelType::try_from(reader.get_pixel_type()?)?;
         reader.little_endian = reader.is_little_endian()?;
         Ok(reader)
+    }
+
+    /// Get ome metadata as ome structure
+    pub fn get_ome(&self) -> Result<Ome> {
+        let mut ome = self.ome_xml()?.parse::<Ome>()?;
+        if let Some(image) = ome.image.as_ref() {
+            if image.len() > 1 {
+                ome.image = Some(vec![image[self.series].clone()]);
+            }
+        }
+        Ok(ome)
     }
 
     /// Get ome metadata as xml string
@@ -339,7 +374,7 @@ impl Reader {
 
     /// Retrieve fame at channel c, slize z and time t.
     pub fn get_frame(&self, c: usize, z: usize, t: usize) -> Result<Frame> {
-        let bytes = if self.is_rgb()? & self.is_interleaved()? {
+        let bytes = if self.is_rgb()? && self.is_interleaved()? {
             let index = self.get_index(z as i32, 0, t as i32)?;
             self.deinterleave(self.open_bytes(index)?, c)?
         } else if self.get_rgb_channel_count()? > 1 {
@@ -418,7 +453,7 @@ impl Reader {
         }
     }
 
-    /// get a slicable view on the image file
+    /// get a sliceable view on the image file
     pub fn view(&self) -> View<Ix5> {
         let slice = s![
             0..self.size_c,

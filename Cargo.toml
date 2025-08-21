@@ -1,8 +1,8 @@
 [package]
 name = "ndbioimage"
-version = "2025.4.1"
-edition = "2021"
-rust-version = "1.78.0"
+version = "2025.8.0"
+edition = "2024"
+rust-version = "1.85.1"
 authors = ["Wim Pomp <w.pomp@nki.nl>"]
 license = "MIT"
 description = "Read bio image formats using the bio-formats java package."
@@ -19,20 +19,28 @@ name = "ndbioimage"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-anyhow = "1.0.98"
+anyhow = { version = "1.0.99", features = ["backtrace"] }
+clap = { version = "4.5.45", features = ["derive"] }
+ffmpeg-sidecar = { version = "2.1.0", optional = true }
 itertools = "0.14.0"
-indexmap = {  version = "2.9.0", features = ["serde"] }
+indexmap = { version = "2.0.0", features = ["serde"] }
+indicatif = { version = "0.18.0", features = ["rayon"], optional = true }
 j4rs = "0.22.0"
-ndarray = {  version = "0.16.1", features = ["serde"] }
+ndarray = { version = "0.16.1", features = ["serde"] }
 num = "0.4.3"
-numpy = { version = "0.24.0", optional = true }
+numpy = { version = "0.25.0", optional = true }
+ordered-float = "5.0.0"
+rayon = { version = "1.11.0", optional = true }
 serde = { version = "1.0.219", features = ["rc"] }
-serde_json = { version = "1.0.140", optional = true }
+serde_json = { version = "1.0.143", optional = true }
 serde_with = "3.12.0"
-thread_local = "1.1.8"
+tiffwrite = { version = "2025.5.0", optional = true}
+thread_local = "1.1.9"
+ome-metadata = "0.2.2"
+lazy_static = "1.5.0"
 
 [dependencies.pyo3]
-version = "0.24.2"
+version = "0.25.1"
 features = ["extension-module", "abi3-py310", "generate-import-lib", "anyhow"]
 optional = true
 
@@ -40,10 +48,17 @@ optional = true
 rayon = "1.10.0"
 
 [build-dependencies]
-anyhow = "1.0.98"
+anyhow = "1.0.99"
 j4rs = "0.22.0"
+ffmpeg-sidecar = "2.1.0"
 retry = "2.1.0"
 
 [features]
-python = ["dep:pyo3", "dep:numpy", "dep:serde_json"]
+# Enables formats for which code in bioformats with a GPL license is needed
 gpl-formats = []
+# Enables python ffi using pyO3
+python = ["dep:pyo3", "dep:numpy", "dep:serde_json"]
+# Enables writing as tiff
+tiff = ["dep:tiffwrite", "dep:indicatif", "dep:rayon"]
+# Enables writing as mp4 using ffmpeg
+movie = ["dep:ffmpeg-sidecar"]

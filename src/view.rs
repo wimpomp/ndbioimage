@@ -1,23 +1,25 @@
-use crate::axes::{slice_info, Ax, Axis, Operation, Slice, SliceInfoElemDef};
+use crate::axes::{Ax, Axis, Operation, Slice, SliceInfoElemDef, slice_info};
+use crate::metadata::Metadata;
 use crate::reader::Reader;
 use crate::stats::MinMax;
-use anyhow::{anyhow, Error, Result};
+use anyhow::{Error, Result, anyhow};
 use indexmap::IndexMap;
-use itertools::iproduct;
+use itertools::{Itertools, iproduct};
 use ndarray::{
-    s, Array, Array0, Array1, Array2, ArrayD, Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix5, IxDyn,
-    SliceArg, SliceInfoElem,
+    Array, Array0, Array1, Array2, ArrayD, Dimension, IntoDimension, Ix0, Ix1, Ix2, Ix5, IxDyn,
+    SliceArg, SliceInfoElem, s,
 };
-use num::{Bounded, FromPrimitive, Zero};
+use num::traits::ToBytes;
+use num::{Bounded, FromPrimitive, ToPrimitive, Zero};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::any::type_name;
 use std::collections::HashMap;
+use std::fmt::{Display, Formatter};
 use std::iter::Sum;
 use std::marker::PhantomData;
-use std::mem::{transmute, transmute_copy};
 use std::ops::{AddAssign, Deref, Div};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 fn idx_bnd(idx: isize, bnd: isize) -> Result<isize> {
@@ -65,8 +67,10 @@ impl<T> Number for T where
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct View<D: Dimension> {
     reader: Arc<Reader>,
+    /// same order as axes
     #[serde_as(as = "Vec<SliceInfoElemDef>")]
     slice: Vec<SliceInfoElem>,
+    /// always has all of cztyx with possibly some new axes added
     axes: Vec<Axis>,
     operations: IndexMap<Axis, Operation>,
     dimensionality: PhantomData<D>,
@@ -83,13 +87,79 @@ impl<D: Dimension> View<D> {
         }
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn new_with_axes(reader: Arc<Reader>, axes: Vec<Axis>) -> Result<Self> {
+        let mut slice = Vec::new();
+        for axis in axes.iter() {
+            match axis {
+                Axis::C => slice.push(SliceInfoElem::Slice {
+                    start: 0,
+                    end: Some(reader.size_c as isize),
+                    step: 1,
+                }),
+                Axis::Z => slice.push(SliceInfoElem::Slice {
+                    start: 0,
+                    end: Some(reader.size_z as isize),
+                    step: 1,
+                }),
+                Axis::T => slice.push(SliceInfoElem::Slice {
+                    start: 0,
+                    end: Some(reader.size_t as isize),
+                    step: 1,
+                }),
+                Axis::Y => slice.push(SliceInfoElem::Slice {
+                    start: 0,
+                    end: Some(reader.size_y as isize),
+                    step: 1,
+                }),
+                Axis::X => slice.push(SliceInfoElem::Slice {
+                    start: 0,
+                    end: Some(reader.size_x as isize),
+                    step: 1,
+                }),
+                Axis::New => {
+                    slice.push(SliceInfoElem::NewAxis);
+                }
+            }
+        }
+        let mut axes = axes.clone();
+        for axis in [Axis::C, Axis::Z, Axis::T, Axis::Y, Axis::X] {
+            if !axes.contains(&axis) {
+                let size = match axis {
+                    Axis::C => reader.size_c,
+                    Axis::Z => reader.size_z,
+                    Axis::T => reader.size_t,
+                    Axis::Y => reader.size_y,
+                    Axis::X => reader.size_x,
+                    Axis::New => 1,
+                };
+                if size > 1 {
+                    return Err(anyhow!(
+                        "Axis {:?} has length {}, but was not included",
+                        axis,
+                        size
+                    ));
+                }
+                slice.push(SliceInfoElem::Index(0));
+                axes.push(axis);
+            }
+        }
+        Ok(Self {
+            reader,
+            slice,
+            axes,
+            operations: IndexMap::new(),
+            dimensionality: PhantomData,
+        })
+    }
+
     /// the file path
     pub fn path(&self) -> &PathBuf {
         &self.reader.path
     }
 
     /// the series in the file
-    pub fn series(&self) -> i32 {
+    pub fn series(&self) -> usize {
         self.reader.series
     }
 
@@ -139,6 +209,11 @@ impl<D: Dimension> View<D> {
         &self.axes
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn get_operations(&self) -> &IndexMap<Axis, Operation> {
+        &self.operations
+    }
+
     /// the slice defining the view
     pub fn get_slice(&self) -> &[SliceInfoElem] {
         &self.slice
@@ -159,6 +234,27 @@ impl<D: Dimension> View<D> {
             .collect()
     }
 
+    /// remove axes of size 1
+    pub fn squeeze(&self) -> Result<View<IxDyn>> {
+        let view = self.clone().into_dyn();
+        let slice: Vec<_> = self
+            .shape()
+            .into_iter()
+            .map(|s| {
+                if s == 1 {
+                    SliceInfoElem::Index(0)
+                } else {
+                    SliceInfoElem::Slice {
+                        start: 0,
+                        end: None,
+                        step: 1,
+                    }
+                }
+            })
+            .collect();
+        view.slice(slice.as_slice())
+    }
+
     pub(crate) fn op_axes(&self) -> Vec<Axis> {
         self.operations.keys().cloned().collect()
     }
@@ -172,9 +268,25 @@ impl<D: Dimension> View<D> {
         }
     }
 
+    /// the number of pixels in the first dimension
+    pub fn len(&self) -> usize {
+        self.shape()[0]
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.shape()[0] == 0
+    }
+
     /// the number of pixels in the view
     pub fn size(&self) -> usize {
         self.shape().into_iter().product()
+    }
+
+    pub fn size_ax(&self, ax: Axis) -> Option<usize> {
+        self.axes()
+            .iter()
+            .position(|a| *a == ax)
+            .map(|i| self.shape()[i])
     }
 
     /// the shape of the view
@@ -202,6 +314,43 @@ impl<D: Dimension> View<D> {
         shape
     }
 
+    pub fn size_of(&self, axis: Axis) -> usize {
+        if let Some(axis_position) = self.axes.iter().position(|a| *a == axis) {
+            match self.slice[axis_position] {
+                SliceInfoElem::Slice { start, end, step } => {
+                    if let Some(e) = end {
+                        ((e - start).max(0) / step) as usize
+                    } else {
+                        panic!("slice has no end")
+                    }
+                }
+                _ => 1,
+            }
+        } else {
+            1
+        }
+    }
+
+    pub fn size_c(&self) -> usize {
+        self.size_of(Axis::C)
+    }
+
+    pub fn size_z(&self) -> usize {
+        self.size_of(Axis::Z)
+    }
+
+    pub fn size_t(&self) -> usize {
+        self.size_of(Axis::T)
+    }
+
+    pub fn size_y(&self) -> usize {
+        self.size_of(Axis::Y)
+    }
+
+    pub fn size_x(&self) -> usize {
+        self.size_of(Axis::X)
+    }
+
     fn shape_all(&self) -> Vec<usize> {
         let mut shape = Vec::<usize>::new();
         for s in self.slice.iter() {
@@ -227,7 +376,7 @@ impl<D: Dimension> View<D> {
         slice.swap(idx0, idx1);
         let mut axes = self.axes.clone();
         axes.swap(idx0, idx1);
-        Ok(View::new(self.reader.clone(), slice, axes))
+        Ok(View::new(self.reader.clone(), slice, axes).with_operations(self.operations.clone()))
     }
 
     /// subset of gives axes will be reordered in given order
@@ -244,7 +393,7 @@ impl<D: Dimension> View<D> {
             slice[j] = self.slice[i];
             axes[j] = self.axes[i];
         }
-        Ok(View::new(self.reader.clone(), slice, axes))
+        Ok(View::new(self.reader.clone(), slice, axes).with_operations(self.operations.clone()))
     }
 
     /// reverse the order of the axes
@@ -253,17 +402,35 @@ impl<D: Dimension> View<D> {
             self.reader.clone(),
             self.slice.iter().rev().cloned().collect(),
             self.axes.iter().rev().cloned().collect(),
-        ))
+        )
+        .with_operations(self.operations.clone()))
     }
 
     fn operate<A: Ax>(&self, axis: A, operation: Operation) -> Result<View<D::Smaller>> {
         let pos = axis.pos_op(&self.axes, &self.slice, &self.op_axes())?;
-        let mut operations = self.operations.clone();
-        operations.insert(self.axes[pos], operation);
-        Ok(
-            View::new(self.reader.clone(), self.slice.clone(), self.axes.clone())
-                .with_operations(operations),
-        )
+        let ax = self.axes[pos];
+        let (axes, slice, operations) = if Axis::New == ax {
+            let mut axes = self.axes.clone();
+            let mut slice = self.slice.clone();
+            axes.remove(pos);
+            slice.remove(pos);
+            (axes, slice, self.operations.clone())
+        } else if self.operations.contains_key(&ax) {
+            if D::NDIM.is_none() {
+                (
+                    self.axes.clone(),
+                    self.slice.clone(),
+                    self.operations.clone(),
+                )
+            } else {
+                return Err(anyhow!("axis {}: {} is already operated on!", pos, ax));
+            }
+        } else {
+            let mut operations = self.operations.clone();
+            operations.insert(ax, operation);
+            (self.axes.clone(), self.slice.clone(), operations)
+        };
+        Ok(View::new(self.reader.clone(), slice, axes).with_operations(operations))
     }
 
     /// maximum along axis
@@ -300,75 +467,111 @@ impl<D: Dimension> View<D> {
         let mut new_slice = Vec::new();
         let mut new_axes = Vec::new();
         let reader_slice = self.slice.as_slice();
-        while (r_idx < reader_slice.len()) & (n_idx < info.len()) {
-            let n = &info[n_idx];
-            let r = &reader_slice[r_idx];
-            let a = &self.axes[r_idx];
-            if self.operations.contains_key(a) {
-                new_slice.push(*r);
-                new_axes.push(*a);
-                r_idx += 1;
-            } else {
-                match (n, r) {
+        while (r_idx < reader_slice.len()) | (n_idx < info.len()) {
+            let n = info.get(n_idx);
+            let r = reader_slice.get(r_idx);
+            let a = self.axes.get(r_idx);
+            match a {
+                Some(i) if self.operations.contains_key(i) => {
+                    new_slice.push(*r.expect("slice should exist for axes under operation"));
+                    new_axes.push(*i);
+                    r_idx += 1;
+                }
+                _ => match (n, r) {
                     (
-                        SliceInfoElem::Slice {
+                        Some(SliceInfoElem::Slice {
                             start: info_start,
                             end: info_end,
                             step: info_step,
-                        },
-                        SliceInfoElem::Slice { start, end, step },
+                        }),
+                        Some(SliceInfoElem::Slice { start, end, step }),
                     ) => {
                         let new_start = start + info_start;
-                        let new_end = match (info_end, end) {
-                            (Some(m), Some(n)) => *n.min(&(start + info_step * m)),
-                            (None, Some(n)) => *n,
-                            _ => panic!("slice has no end"),
+                        let end = end.expect("slice has no end");
+                        let new_end = if let Some(m) = info_end {
+                            end.min(start + info_step * m)
+                        } else {
+                            end
                         };
                         let new_step = (step * info_step).abs();
+                        if new_start > end {
+                            return Err(anyhow!(
+                                "Index {} out of bounds {}",
+                                info_start,
+                                (end - start) / step
+                            ));
+                        }
                         new_slice.push(SliceInfoElem::Slice {
                             start: new_start,
                             end: Some(new_end),
                             step: new_step,
                         });
-                        new_axes.push(*a);
+                        new_axes.push(*a.expect("axis should exist when slice exists"));
                         n_idx += 1;
                         r_idx += 1;
                     }
-                    (SliceInfoElem::Index(k), SliceInfoElem::Slice { start, end, step }) => {
-                        if *k < 0 {
-                            new_slice.push(SliceInfoElem::Index(end.unwrap_or(0) + step.abs() * k))
+                    (
+                        Some(SliceInfoElem::Index(k)),
+                        Some(SliceInfoElem::Slice { start, end, step }),
+                    ) => {
+                        let i = if *k < 0 {
+                            end.unwrap_or(0) + step.abs() * k
                         } else {
-                            new_slice.push(SliceInfoElem::Index(start + step.abs() * k));
+                            start + step.abs() * k
+                        };
+                        let end = end.expect("slice has no end");
+                        if i >= end {
+                            return Err(anyhow!(
+                                "Index {} out of bounds {}",
+                                i,
+                                (end - start) / step
+                            ));
                         }
-                        new_axes.push(*a);
+                        new_slice.push(SliceInfoElem::Index(i));
+                        new_axes.push(*a.expect("axis should exist when slice exists"));
                         n_idx += 1;
                         r_idx += 1;
                     }
-                    (SliceInfoElem::NewAxis, SliceInfoElem::NewAxis) => {
-                        new_slice.push(SliceInfoElem::NewAxis);
-                        new_slice.push(SliceInfoElem::NewAxis);
-                        new_axes.push(Axis::New);
-                        new_axes.push(Axis::New);
-                        n_idx += 1;
-                        r_idx += 1;
-                    }
-                    (_, SliceInfoElem::NewAxis) => {
+                    (Some(SliceInfoElem::Slice { start, .. }), Some(SliceInfoElem::NewAxis)) => {
+                        if *start != 0 {
+                            return Err(anyhow!("Index {} out of bounds 1", start));
+                        }
                         new_slice.push(SliceInfoElem::NewAxis);
                         new_axes.push(Axis::New);
                         n_idx += 1;
                         r_idx += 1;
                     }
-                    (SliceInfoElem::NewAxis, _) => {
+                    (Some(SliceInfoElem::Index(k)), Some(SliceInfoElem::NewAxis)) => {
+                        if *k != 0 {
+                            return Err(anyhow!("Index {} out of bounds 1", k));
+                        }
+                        n_idx += 1;
+                        r_idx += 1;
+                    }
+                    (Some(SliceInfoElem::NewAxis), Some(SliceInfoElem::NewAxis)) => {
+                        new_slice.push(SliceInfoElem::NewAxis);
+                        new_slice.push(SliceInfoElem::NewAxis);
+                        new_axes.push(Axis::New);
+                        new_axes.push(Axis::New);
+                        n_idx += 1;
+                        r_idx += 1;
+                    }
+                    (Some(SliceInfoElem::NewAxis), _) => {
                         new_slice.push(SliceInfoElem::NewAxis);
                         new_axes.push(Axis::New);
                         n_idx += 1;
                     }
-                    (_, SliceInfoElem::Index(k)) => {
+                    (_, Some(SliceInfoElem::Index(k))) => {
                         new_slice.push(SliceInfoElem::Index(*k));
-                        new_axes.push(*a);
+                        new_axes.push(*a.expect("axis should exist when slice exists"));
                         r_idx += 1;
                     }
-                }
+                    _ => {
+                        panic!("unreachable");
+                        // n_idx += 1;
+                        // r_idx += 1;
+                    }
+                },
             }
         }
         debug_assert_eq!(r_idx, reader_slice.len());
@@ -382,37 +585,50 @@ impl<D: Dimension> View<D> {
             .with_operations(self.operations.clone()))
     }
 
+    /// resets axes to cztyx order, with all 5 axes present,
+    /// inserts new axes in place of axes under operation (max_proj etc.)
+    pub fn reset_axes(&self) -> Result<View<Ix5>> {
+        let mut axes = Vec::new();
+        let mut slice = Vec::new();
+
+        for ax in [Axis::C, Axis::Z, Axis::T, Axis::Y, Axis::X] {
+            axes.push(ax);
+            let s = self.slice[ax.pos(&self.axes, &self.slice)?];
+            match s {
+                SliceInfoElem::Slice { .. } => slice.push(s),
+                SliceInfoElem::Index(i) => slice.push(SliceInfoElem::Slice {
+                    start: i,
+                    end: Some(i + 1),
+                    step: 1,
+                }),
+                SliceInfoElem::NewAxis => {
+                    panic!("slice should not be NewAxis when axis is one of cztyx")
+                }
+            }
+            if self.operations.contains_key(&ax) {
+                axes.push(Axis::New);
+                slice.push(SliceInfoElem::NewAxis)
+            }
+        }
+        Ok(View::new(self.reader.clone(), slice, axes).with_operations(self.operations.clone()))
+    }
+
     /// slice, but slice elements are in cztyx order, all cztyx must be given,
     /// but axes not present in view will be ignored, view axes are reordered in cztyx order
     pub fn slice_cztyx<I>(&self, info: I) -> Result<View<I::OutDim>>
     where
         I: SliceArg<Ix5>,
     {
-        let axes = self.axes();
-        let slice: Vec<_> = info
-            .as_ref()
-            .iter()
-            .zip(self.axes.iter())
-            .filter_map(|(&s, ax)| if axes.contains(ax) { Some(s) } else { None })
-            .collect();
-        let new_axes: Vec<_> = [Axis::C, Axis::Z, Axis::T, Axis::Y, Axis::X]
-            .into_iter()
-            .filter(|ax| axes.contains(ax))
-            .collect();
-        self.clone()
-            .into_dyn()
-            .permute_axes(&new_axes)?
-            .slice(slice.as_slice())?
-            .into_dimensionality()
+        self.reset_axes()?.slice(info)?.into_dimensionality()
     }
 
     /// the pixel intensity at a given index
     pub fn item_at<T>(&self, index: &[isize]) -> Result<T>
     where
         T: Number,
-        ArrayD<T>: MinMax,
-        Array1<T>: MinMax,
-        Array2<T>: MinMax,
+        ArrayD<T>: MinMax<Output = ArrayD<T>>,
+        Array1<T>: MinMax<Output = Array0<T>>,
+        Array2<T>: MinMax<Output = Array1<T>>,
     {
         let slice: Vec<_> = index.iter().map(|s| SliceInfoElem::Index(*s)).collect();
         let view = self.clone().into_dyn().slice(slice.as_slice())?;
@@ -424,9 +640,9 @@ impl<D: Dimension> View<D> {
     pub fn as_array<T>(&self) -> Result<Array<T, D>>
     where
         T: Number,
-        ArrayD<T>: MinMax,
-        Array1<T>: MinMax,
-        Array2<T>: MinMax,
+        ArrayD<T>: MinMax<Output = ArrayD<T>>,
+        Array1<T>: MinMax<Output = Array0<T>>,
+        Array2<T>: MinMax<Output = Array1<T>>,
     {
         Ok(self.as_array_dyn()?.into_dimensionality()?)
     }
@@ -435,9 +651,9 @@ impl<D: Dimension> View<D> {
     pub fn as_array_dyn<T>(&self) -> Result<ArrayD<T>>
     where
         T: Number,
-        ArrayD<T>: MinMax,
-        Array1<T>: MinMax,
-        Array2<T>: MinMax,
+        ArrayD<T>: MinMax<Output = ArrayD<T>>,
+        Array1<T>: MinMax<Output = Array0<T>>,
+        Array2<T>: MinMax<Output = Array1<T>>,
     {
         let mut op_xy = IndexMap::new();
         if let Some((&ax, op)) = self.operations.first() {
@@ -461,18 +677,15 @@ impl<D: Dimension> View<D> {
         for (s, a) in self.slice.iter().zip(&self.axes) {
             match s {
                 SliceInfoElem::Slice { start, end, step } => {
-                    if let Some(e) = end {
-                        if !op_xy.contains_key(a) && !op_czt.contains_key(a) {
-                            shape_out.push(((e - start).max(0) / step) as usize);
-                            slice.push(SliceInfoElem::Slice {
-                                start: 0,
-                                end: None,
-                                step: 1,
-                            });
-                            ax_out.push(*a);
-                        }
-                    } else {
-                        panic!("slice has no end")
+                    let end = end.expect("slice has no end");
+                    if !op_xy.contains_key(a) && !op_czt.contains_key(a) {
+                        shape_out.push(((end - start).max(0) / step) as usize);
+                        slice.push(SliceInfoElem::Slice {
+                            start: 0,
+                            end: None,
+                            step: 1,
+                        });
+                        ax_out.push(*a);
                     }
                 }
                 SliceInfoElem::Index(_) => {}
@@ -542,7 +755,9 @@ impl<D: Dimension> View<D> {
 
         let mut axes_out_idx = [None; 5];
         for (i, ax) in ax_out.iter().enumerate() {
-            axes_out_idx[*ax as usize] = Some(i);
+            if *ax < Axis::New {
+                axes_out_idx[*ax as usize] = Some(i);
+            }
         }
 
         for (c, z, t) in iproduct!(&slice_reader[0], &slice_reader[1], &slice_reader[2]) {
@@ -570,17 +785,14 @@ impl<D: Dimension> View<D> {
                         let (&ax1, op1) = op_xy.get_index(1).unwrap();
                         let a = arr_frame.slice(xys).to_owned();
                         let b = op0.operate(a, ax0 as usize - 3)?;
-                        let c: &Array1<T> = unsafe { transmute(&b) };
-                        let d = op1.operate(c.to_owned(), ax1 as usize - 3)?;
-                        let e: &Array0<T> = unsafe { transmute(&d) };
-                        e.to_owned().into_dyn()
+                        let c = op1.operate(b.to_owned(), ax1 as usize - 3)?;
+                        c.to_owned().into_dyn()
                     } else if op_xy.contains_key(&Axis::X) || op_xy.contains_key(&Axis::Y) {
                         let xys = slice_info::<Ix1>(&xy)?;
                         let (&ax, op) = op_xy.first().unwrap();
                         let a = arr_frame.slice(xys).to_owned();
                         let b = op.operate(a, ax as usize - 3)?;
-                        let c: &Array0<T> = unsafe { transmute(&b) };
-                        c.to_owned().into_dyn()
+                        b.to_owned().into_dyn()
                     } else {
                         let xys = slice_info::<Ix0>(&xy)?;
                         arr_frame.slice(xys).to_owned().into_dyn()
@@ -592,8 +804,7 @@ impl<D: Dimension> View<D> {
                         let (&ax, op) = op_xy.first().unwrap();
                         let a = arr_frame.slice(xys).to_owned();
                         let b = op.operate(a, ax as usize - 3)?;
-                        let c: &Array1<T> = unsafe { transmute(&b) };
-                        c.to_owned().into_dyn()
+                        b.to_owned().into_dyn()
                     } else {
                         let xys = slice_info::<Ix1>(&xy)?;
                         arr_frame.slice(xys).to_owned().into_dyn()
@@ -643,15 +854,21 @@ impl<D: Dimension> View<D> {
             }
         }
         let mut out = Some(array);
-        let ax_out: HashMap<Axis, usize> = ax_out
+        let mut ax_out: HashMap<Axis, usize> = ax_out
             .into_iter()
             .enumerate()
             .map(|(i, a)| (a, i))
             .collect();
         for (ax, op) in self.operations.iter().skip(op_xy.len() + op_czt.len()) {
-            if let Some(&idx) = ax_out.get(ax) {
+            if let Some(idx) = ax_out.remove(ax) {
+                for (_, i) in ax_out.iter_mut() {
+                    if *i > idx {
+                        *i -= 1;
+                    }
+                }
                 let arr = out.take().unwrap();
-                let _ = out.insert(unsafe { transmute_copy(&op.operate(arr, idx)?) });
+                let a = op.operate(arr, idx)?;
+                let _ = out.insert(a);
             }
         }
         let mut n = 1;
@@ -671,23 +888,59 @@ impl<D: Dimension> View<D> {
         Ok(array)
     }
 
-    /// retrieve a single frame at czt, sliced accordingly
-    pub fn get_frame<T>(&self, c: isize, z: isize, t: isize) -> Result<Array2<T>>
+    /// turn the view into a 1d array
+    pub fn flatten<T>(&self) -> Result<Array1<T>>
     where
         T: Number,
-        ArrayD<T>: MinMax,
-        Array1<T>: MinMax,
-        Array2<T>: MinMax,
+        ArrayD<T>: MinMax<Output = ArrayD<T>>,
+        Array1<T>: MinMax<Output = Array0<T>>,
+        Array2<T>: MinMax<Output = Array1<T>>,
     {
+        Ok(Array1::from_iter(self.as_array()?.iter().cloned()))
+    }
+
+    /// turn the data into a byte vector
+    pub fn to_bytes<T>(&self) -> Result<Vec<u8>>
+    where
+        T: Number + ToBytesVec,
+        ArrayD<T>: MinMax<Output = ArrayD<T>>,
+        Array1<T>: MinMax<Output = Array0<T>>,
+        Array2<T>: MinMax<Output = Array1<T>>,
+    {
+        Ok(self
+            .as_array()?
+            .iter()
+            .flat_map(|i| i.to_bytes_vec())
+            .collect())
+    }
+
+    /// retrieve a single frame at czt, sliced accordingly
+    pub fn get_frame<T, N>(&self, c: N, z: N, t: N) -> Result<Array2<T>>
+    where
+        T: Number,
+        ArrayD<T>: MinMax<Output = ArrayD<T>>,
+        Array1<T>: MinMax<Output = Array0<T>>,
+        Array2<T>: MinMax<Output = Array1<T>>,
+        N: Display + ToPrimitive,
+    {
+        let c = c
+            .to_isize()
+            .ok_or_else(|| anyhow!("cannot convert {} into isize", c))?;
+        let z = z
+            .to_isize()
+            .ok_or_else(|| anyhow!("cannot convert {} into isize", z))?;
+        let t = t
+            .to_isize()
+            .ok_or_else(|| anyhow!("cannot convert {} into isize", t))?;
         self.slice_cztyx(s![c, z, t, .., ..])?.as_array()
     }
 
     fn get_stat<T>(&self, operation: Operation) -> Result<T>
     where
         T: Number + Sum,
-        ArrayD<T>: MinMax,
-        Array1<T>: MinMax,
-        Array2<T>: MinMax,
+        ArrayD<T>: MinMax<Output = ArrayD<T>>,
+        Array1<T>: MinMax<Output = Array0<T>>,
+        Array2<T>: MinMax<Output = Array1<T>>,
     {
         let arr: ArrayD<T> = self.as_array_dyn()?;
         Ok(match operation {
@@ -715,9 +968,9 @@ impl<D: Dimension> View<D> {
     pub fn max<T>(&self) -> Result<T>
     where
         T: Number + Sum,
-        ArrayD<T>: MinMax,
-        Array1<T>: MinMax,
-        Array2<T>: MinMax,
+        ArrayD<T>: MinMax<Output = ArrayD<T>>,
+        Array1<T>: MinMax<Output = Array0<T>>,
+        Array2<T>: MinMax<Output = Array1<T>>,
     {
         self.get_stat(Operation::Max)
     }
@@ -726,9 +979,9 @@ impl<D: Dimension> View<D> {
     pub fn min<T>(&self) -> Result<T>
     where
         T: Number + Sum,
-        ArrayD<T>: MinMax,
-        Array1<T>: MinMax,
-        Array2<T>: MinMax,
+        ArrayD<T>: MinMax<Output = ArrayD<T>>,
+        Array1<T>: MinMax<Output = Array0<T>>,
+        Array2<T>: MinMax<Output = Array1<T>>,
     {
         self.get_stat(Operation::Min)
     }
@@ -737,9 +990,9 @@ impl<D: Dimension> View<D> {
     pub fn sum<T>(&self) -> Result<T>
     where
         T: Number + Sum,
-        ArrayD<T>: MinMax,
-        Array1<T>: MinMax,
-        Array2<T>: MinMax,
+        ArrayD<T>: MinMax<Output = ArrayD<T>>,
+        Array1<T>: MinMax<Output = Array0<T>>,
+        Array2<T>: MinMax<Output = Array1<T>>,
     {
         self.get_stat(Operation::Sum)
     }
@@ -748,11 +1001,34 @@ impl<D: Dimension> View<D> {
     pub fn mean<T>(&self) -> Result<T>
     where
         T: Number + Sum,
-        ArrayD<T>: MinMax,
-        Array1<T>: MinMax,
-        Array2<T>: MinMax,
+        ArrayD<T>: MinMax<Output = ArrayD<T>>,
+        Array1<T>: MinMax<Output = Array0<T>>,
+        Array2<T>: MinMax<Output = Array1<T>>,
     {
         self.get_stat(Operation::Mean)
+    }
+
+    /// gives a helpful summary of the recorded experiment
+    pub fn summary(&self) -> Result<String> {
+        let mut s = "".to_string();
+        s.push_str(&format!("path/filename: {}\n", self.path.display()));
+        s.push_str(&format!("series/pos:    {}\n", self.series));
+        s.push_str(&format!("dtype:         {:?}\n", self.pixel_type));
+        let axes = self
+            .axes()
+            .into_iter()
+            .map(|ax| format!("{}", ax))
+            .join("")
+            .to_lowercase();
+        let shape = self
+            .shape()
+            .into_iter()
+            .map(|s| format!("{}", s))
+            .join(" x ");
+        let space = " ".repeat(6usize.saturating_sub(axes.len()));
+        s.push_str(&format!("shape ({}):{}{}\n", axes, space, shape));
+        s.push_str(&self.get_ome()?.summary()?);
+        Ok(s)
     }
 }
 
@@ -768,9 +1044,9 @@ impl<T, D> TryFrom<View<D>> for Array<T, D>
 where
     T: Number,
     D: Dimension,
-    ArrayD<T>: MinMax,
-    Array1<T>: MinMax,
-    Array2<T>: MinMax,
+    ArrayD<T>: MinMax<Output = ArrayD<T>>,
+    Array1<T>: MinMax<Output = Array0<T>>,
+    Array2<T>: MinMax<Output = Array1<T>>,
 {
     type Error = Error;
 
@@ -783,9 +1059,9 @@ impl<T, D> TryFrom<&View<D>> for Array<T, D>
 where
     T: Number,
     D: Dimension,
-    ArrayD<T>: MinMax,
-    Array1<T>: MinMax,
-    Array2<T>: MinMax,
+    ArrayD<T>: MinMax<Output = ArrayD<T>>,
+    Array1<T>: MinMax<Output = Array0<T>>,
+    Array2<T>: MinMax<Output = Array1<T>>,
 {
     type Error = Error;
 
@@ -799,18 +1075,37 @@ pub trait Item {
     fn item<T>(&self) -> Result<T>
     where
         T: Number,
-        ArrayD<T>: MinMax,
-        Array1<T>: MinMax,
-        Array2<T>: MinMax;
+        ArrayD<T>: MinMax<Output = ArrayD<T>>,
+        Array1<T>: MinMax<Output = Array0<T>>,
+        Array2<T>: MinMax<Output = Array1<T>>;
+}
+
+impl View<Ix5> {
+    pub fn from_path<P>(path: P, series: usize) -> Result<Self>
+    where
+        P: AsRef<Path>,
+    {
+        let mut path = path.as_ref().to_path_buf();
+        if path.is_dir() {
+            for file in path.read_dir()?.flatten() {
+                let p = file.path();
+                if file.path().is_file() && (p.extension() == Some("tif".as_ref())) {
+                    path = p;
+                    break;
+                }
+            }
+        }
+        Ok(Reader::new(path, series)?.view())
+    }
 }
 
 impl Item for View<Ix0> {
     fn item<T>(&self) -> Result<T>
     where
         T: Number,
-        ArrayD<T>: MinMax,
-        Array1<T>: MinMax,
-        Array2<T>: MinMax,
+        ArrayD<T>: MinMax<Output = ArrayD<T>>,
+        Array1<T>: MinMax<Output = Array0<T>>,
+        Array2<T>: MinMax<Output = Array1<T>>,
     {
         Ok(self
             .as_array()?
@@ -819,3 +1114,36 @@ impl Item for View<Ix0> {
             .clone())
     }
 }
+
+impl<D: Dimension> Display for View<D> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if let Ok(summary) = self.summary() {
+            write!(f, "{}", summary)
+        } else {
+            write!(f, "{}", self.path.display())
+        }
+    }
+}
+
+/// trait to convert numbers to bytes
+pub trait ToBytesVec {
+    fn to_bytes_vec(&self) -> Vec<u8>;
+}
+
+macro_rules! to_bytes_vec_impl {
+    ($($t:ty $(,)?)*) => {
+        $(
+            impl ToBytesVec for $t {
+
+                #[inline]
+                fn to_bytes_vec(&self) -> Vec<u8> {
+                    self.to_ne_bytes().to_vec()
+                }
+            }
+        )*
+    };
+}
+
+to_bytes_vec_impl!(
+    u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize, f32, f64
+);

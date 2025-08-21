@@ -1,16 +1,21 @@
 use crate::axes::Axis;
 use crate::bioformats::download_bioformats;
+use crate::metadata::Metadata;
 use crate::reader::{PixelType, Reader};
 use crate::view::{Item, View};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
+use itertools::Itertools;
 use ndarray::{Ix0, IxDyn, SliceInfoElem};
 use numpy::IntoPyArray;
+use ome_metadata::Ome;
+use pyo3::IntoPyObjectExt;
+use pyo3::exceptions::PyNotImplementedError;
 use pyo3::prelude::*;
 use pyo3::types::{PyEllipsis, PyInt, PyList, PySlice, PySliceMethods, PyString, PyTuple};
-use pyo3::IntoPyObjectExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{from_str, to_string};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[pyclass(module = "ndbioimage.ndbioimage_rs")]
 struct ViewConstructor;
@@ -22,11 +27,9 @@ impl ViewConstructor {
         Self
     }
 
-    fn __getstate__(&self) -> (u8,) {
-        (0,)
+    fn __getnewargs__<'py>(&self, py: Python<'py>) -> Bound<'py, PyTuple> {
+        PyTuple::empty(py)
     }
-
-    fn __setstate__(&self, _state: (u8,)) {}
 
     #[staticmethod]
     fn __call__(state: String) -> PyResult<PyView> {
@@ -40,32 +43,122 @@ impl ViewConstructor {
 
 #[pyclass(subclass, module = "ndbioimage.ndbioimage_rs")]
 #[pyo3(name = "View")]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct PyView {
     view: View<IxDyn>,
     dtype: PixelType,
+    ome: Arc<Ome>,
 }
 
 #[pymethods]
 impl PyView {
-    #[new]
-    #[pyo3(signature = (path, series = 0, dtype = "uint16"))]
     /// new view on a file at path, open series #, open as dtype: (u)int(8/16/32) or float(32/64)
-    fn new(path: &str, series: usize, dtype: &str) -> PyResult<Self> {
-        let mut path = PathBuf::from(path);
-        if path.is_dir() {
-            for file in path.read_dir()?.flatten() {
-                let p = file.path();
-                if file.path().is_file() & (p.extension() == Some("tif".as_ref())) {
-                    path = p;
-                    break;
+    #[new]
+    #[pyo3(signature = (path, series = 0, dtype = "uint16", axes = "cztyx"))]
+    fn new(path: Bound<'_, PyAny>, series: usize, dtype: &str, axes: &str) -> PyResult<Self> {
+        if path.is_instance_of::<Self>() {
+            Ok(path.downcast_into::<Self>()?.extract::<Self>()?)
+        } else {
+            let mut path = PathBuf::from(path.downcast_into::<PyString>()?.extract::<String>()?);
+            if path.is_dir() {
+                for file in path.read_dir()?.flatten() {
+                    let p = file.path();
+                    if file.path().is_file() && (p.extension() == Some("tif".as_ref())) {
+                        path = p;
+                        break;
+                    }
                 }
             }
+            let axes = axes
+                .chars()
+                .map(|a| a.to_string().parse())
+                .collect::<Result<Vec<Axis>>>()?;
+            let reader = Reader::new(&path, series)?;
+            let view = View::new_with_axes(Arc::new(reader), axes)?;
+            let dtype = dtype.parse()?;
+            let ome = Arc::new(view.get_ome()?);
+            Ok(Self { view, dtype, ome })
         }
-        Ok(Self {
-            view: Reader::new(&path, series as i32)?.view().into_dyn(),
-            dtype: dtype.parse()?,
-        })
+    }
+
+    fn squeeze<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let view = self.view.squeeze()?;
+        if view.ndim() == 0 {
+            Ok(match self.dtype {
+                PixelType::I8 => view
+                    .into_dimensionality::<Ix0>()?
+                    .item::<i8>()?
+                    .into_pyobject(py)?
+                    .into_any(),
+                PixelType::U8 => view
+                    .into_dimensionality::<Ix0>()?
+                    .item::<u8>()?
+                    .into_pyobject(py)?
+                    .into_any(),
+                PixelType::I16 => view
+                    .into_dimensionality::<Ix0>()?
+                    .item::<i16>()?
+                    .into_pyobject(py)?
+                    .into_any(),
+                PixelType::U16 => view
+                    .into_dimensionality::<Ix0>()?
+                    .item::<u16>()?
+                    .into_pyobject(py)?
+                    .into_any(),
+                PixelType::I32 => view
+                    .into_dimensionality::<Ix0>()?
+                    .item::<i32>()?
+                    .into_pyobject(py)?
+                    .into_any(),
+                PixelType::U32 => view
+                    .into_dimensionality::<Ix0>()?
+                    .item::<u32>()?
+                    .into_pyobject(py)?
+                    .into_any(),
+                PixelType::I64 => view
+                    .into_dimensionality::<Ix0>()?
+                    .item::<i64>()?
+                    .into_pyobject(py)?
+                    .into_any(),
+                PixelType::U64 => view
+                    .into_dimensionality::<Ix0>()?
+                    .item::<u64>()?
+                    .into_pyobject(py)?
+                    .into_any(),
+                PixelType::I128 => view
+                    .into_dimensionality::<Ix0>()?
+                    .item::<i64>()?
+                    .into_pyobject(py)?
+                    .into_any(),
+                PixelType::U128 => view
+                    .into_dimensionality::<Ix0>()?
+                    .item::<u64>()?
+                    .into_pyobject(py)?
+                    .into_any(),
+                PixelType::F32 => view
+                    .into_dimensionality::<Ix0>()?
+                    .item::<f32>()?
+                    .into_pyobject(py)?
+                    .into_any(),
+                PixelType::F64 => view
+                    .into_dimensionality::<Ix0>()?
+                    .item::<f64>()?
+                    .into_pyobject(py)?
+                    .into_any(),
+                PixelType::F128 => view
+                    .into_dimensionality::<Ix0>()?
+                    .item::<f64>()?
+                    .into_pyobject(py)?
+                    .into_any(),
+            })
+        } else {
+            PyView {
+                view,
+                dtype: self.dtype.clone(),
+                ome: self.ome.clone(),
+            }
+            .into_bound_py_any(py)
+        }
     }
 
     /// close the file: does nothing as this is handled automatically
@@ -73,11 +166,18 @@ impl PyView {
         Ok(())
     }
 
-    fn copy(&self) -> PyView {
-        PyView {
+    /// change the data type of the view: (u)int(8/16/32) or float(32/64)
+    fn as_type(&self, dtype: &str) -> PyResult<PyView> {
+        Ok(PyView {
             view: self.view.clone(),
-            dtype: self.dtype.clone(),
-        }
+            dtype: dtype.parse()?,
+            ome: self.ome.clone(),
+        })
+    }
+
+    /// change the data type of the view: (u)int(8/16/32) or float(32/64)
+    fn astype(&self, dtype: &str) -> PyResult<PyView> {
+        self.as_type(dtype)
     }
 
     /// slice the view and return a new view or a single number
@@ -216,9 +316,31 @@ impl PyView {
             PyView {
                 view,
                 dtype: self.dtype.clone(),
+                ome: self.ome.clone(),
             }
             .into_bound_py_any(py)
         }
+    }
+
+    #[pyo3(signature = (dtype = None))]
+    fn __array__<'py>(&self, py: Python<'py>, dtype: Option<&str>) -> PyResult<Bound<'py, PyAny>> {
+        if let Some(dtype) = dtype {
+            self.as_type(dtype)?.as_array(py)
+        } else {
+            self.as_array(py)
+        }
+    }
+
+    fn __contains__(&self, _item: Bound<'_, PyAny>) -> PyResult<bool> {
+        Err(PyNotImplementedError::new_err("contains not implemented"))
+    }
+
+    fn __enter__<'p>(slf: PyRef<'p, Self>, _py: Python<'p>) -> PyResult<PyRef<'p, Self>> {
+        Ok(slf)
+    }
+
+    fn __exit__(&self) -> PyResult<()> {
+        self.close()
     }
 
     fn __reduce__(&self) -> PyResult<(ViewConstructor, (String,))> {
@@ -227,6 +349,34 @@ impl PyView {
         } else {
             Err(anyhow!("cannot get state").into())
         }
+    }
+
+    fn __copy__(&self) -> Self {
+        Self {
+            view: self.view.clone(),
+            dtype: self.dtype.clone(),
+            ome: self.ome.clone(),
+        }
+    }
+
+    fn copy(&self) -> Self {
+        Self {
+            view: self.view.clone(),
+            dtype: self.dtype.clone(),
+            ome: self.ome.clone(),
+        }
+    }
+
+    fn __len__(&self) -> PyResult<usize> {
+        Ok(self.view.len())
+    }
+
+    fn __repr__(&self) -> PyResult<String> {
+        Ok(self.view.summary()?)
+    }
+
+    fn __str__(&self) -> PyResult<String> {
+        Ok(self.view.path.display().to_string())
     }
 
     /// retrieve a single frame at czt, sliced accordingly
@@ -240,73 +390,113 @@ impl PyView {
         Ok(match self.dtype {
             PixelType::I8 => self
                 .view
-                .get_frame::<i8>(c, z, t)?
+                .get_frame::<i8, _>(c, z, t)?
                 .into_pyarray(py)
                 .into_any(),
             PixelType::U8 => self
                 .view
-                .get_frame::<u8>(c, z, t)?
+                .get_frame::<u8, _>(c, z, t)?
                 .into_pyarray(py)
                 .into_any(),
             PixelType::I16 => self
                 .view
-                .get_frame::<i16>(c, z, t)?
+                .get_frame::<i16, _>(c, z, t)?
                 .into_pyarray(py)
                 .into_any(),
             PixelType::U16 => self
                 .view
-                .get_frame::<u16>(c, z, t)?
+                .get_frame::<u16, _>(c, z, t)?
                 .into_pyarray(py)
                 .into_any(),
             PixelType::I32 => self
                 .view
-                .get_frame::<i32>(c, z, t)?
+                .get_frame::<i32, _>(c, z, t)?
                 .into_pyarray(py)
                 .into_any(),
             PixelType::U32 => self
                 .view
-                .get_frame::<u32>(c, z, t)?
+                .get_frame::<u32, _>(c, z, t)?
                 .into_pyarray(py)
                 .into_any(),
             PixelType::F32 => self
                 .view
-                .get_frame::<f32>(c, z, t)?
+                .get_frame::<f32, _>(c, z, t)?
                 .into_pyarray(py)
                 .into_any(),
             PixelType::F64 => self
                 .view
-                .get_frame::<f64>(c, z, t)?
+                .get_frame::<f64, _>(c, z, t)?
                 .into_pyarray(py)
                 .into_any(),
             PixelType::I64 => self
                 .view
-                .get_frame::<i64>(c, z, t)?
+                .get_frame::<i64, _>(c, z, t)?
                 .into_pyarray(py)
                 .into_any(),
             PixelType::U64 => self
                 .view
-                .get_frame::<u64>(c, z, t)?
+                .get_frame::<u64, _>(c, z, t)?
                 .into_pyarray(py)
                 .into_any(),
             PixelType::I128 => self
                 .view
-                .get_frame::<i64>(c, z, t)?
+                .get_frame::<i64, _>(c, z, t)?
                 .into_pyarray(py)
                 .into_any(),
             PixelType::U128 => self
                 .view
-                .get_frame::<u64>(c, z, t)?
+                .get_frame::<u64, _>(c, z, t)?
                 .into_pyarray(py)
                 .into_any(),
             PixelType::F128 => self
                 .view
-                .get_frame::<f64>(c, z, t)?
+                .get_frame::<f64, _>(c, z, t)?
                 .into_pyarray(py)
                 .into_any(),
         })
     }
 
-    /// retrieve the ome metadata as an xml string
+    fn flatten<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        Ok(match self.dtype {
+            PixelType::I8 => self.view.flatten::<i8>()?.into_pyarray(py).into_any(),
+            PixelType::U8 => self.view.flatten::<u8>()?.into_pyarray(py).into_any(),
+            PixelType::I16 => self.view.flatten::<i16>()?.into_pyarray(py).into_any(),
+            PixelType::U16 => self.view.flatten::<u16>()?.into_pyarray(py).into_any(),
+            PixelType::I32 => self.view.flatten::<i32>()?.into_pyarray(py).into_any(),
+            PixelType::U32 => self.view.flatten::<u32>()?.into_pyarray(py).into_any(),
+            PixelType::F32 => self.view.flatten::<f32>()?.into_pyarray(py).into_any(),
+            PixelType::F64 => self.view.flatten::<f64>()?.into_pyarray(py).into_any(),
+            PixelType::I64 => self.view.flatten::<i64>()?.into_pyarray(py).into_any(),
+            PixelType::U64 => self.view.flatten::<u64>()?.into_pyarray(py).into_any(),
+            PixelType::I128 => self.view.flatten::<i64>()?.into_pyarray(py).into_any(),
+            PixelType::U128 => self.view.flatten::<u64>()?.into_pyarray(py).into_any(),
+            PixelType::F128 => self.view.flatten::<f64>()?.into_pyarray(py).into_any(),
+        })
+    }
+
+    fn to_bytes(&self) -> PyResult<Vec<u8>> {
+        Ok(match self.dtype {
+            PixelType::I8 => self.view.to_bytes::<i8>()?,
+            PixelType::U8 => self.view.to_bytes::<u8>()?,
+            PixelType::I16 => self.view.to_bytes::<i16>()?,
+            PixelType::U16 => self.view.to_bytes::<u16>()?,
+            PixelType::I32 => self.view.to_bytes::<i32>()?,
+            PixelType::U32 => self.view.to_bytes::<u32>()?,
+            PixelType::F32 => self.view.to_bytes::<f32>()?,
+            PixelType::F64 => self.view.to_bytes::<f64>()?,
+            PixelType::I64 => self.view.to_bytes::<i64>()?,
+            PixelType::U64 => self.view.to_bytes::<u64>()?,
+            PixelType::I128 => self.view.to_bytes::<i64>()?,
+            PixelType::U128 => self.view.to_bytes::<u64>()?,
+            PixelType::F128 => self.view.to_bytes::<f64>()?,
+        })
+    }
+
+    fn tobytes(&self) -> PyResult<Vec<u8>> {
+        self.to_bytes()
+    }
+
+    /// retrieve the ome metadata as an XML string
     fn get_ome_xml(&self) -> PyResult<String> {
         Ok(self.view.get_ome_xml()?)
     }
@@ -319,18 +509,14 @@ impl PyView {
 
     /// the series in the file
     #[getter]
-    fn series(&self) -> PyResult<i32> {
+    fn series(&self) -> PyResult<usize> {
         Ok(self.view.series)
     }
 
     /// the axes in the view
     #[getter]
-    fn axes(&self) -> Vec<String> {
-        self.view
-            .axes()
-            .iter()
-            .map(|a| format!("{:?}", a))
-            .collect()
+    fn axes(&self) -> String {
+        self.view.axes().iter().map(|a| format!("{:?}", a)).join("")
     }
 
     /// the shape of the view
@@ -391,6 +577,7 @@ impl PyView {
         Ok(PyView {
             view,
             dtype: self.dtype.clone(),
+            ome: self.ome.clone(),
         })
     }
 
@@ -409,7 +596,14 @@ impl PyView {
         Ok(PyView {
             view,
             dtype: self.dtype.clone(),
+            ome: self.ome.clone(),
         })
+    }
+
+    #[allow(non_snake_case)]
+    #[getter]
+    fn T(&self) -> PyResult<Self> {
+        self.transpose(None)
     }
 
     /// collect data into a numpy array
@@ -428,14 +622,6 @@ impl PyView {
             PixelType::I128 => self.view.as_array_dyn::<i64>()?.into_pyarray(py).into_any(),
             PixelType::U128 => self.view.as_array_dyn::<u64>()?.into_pyarray(py).into_any(),
             PixelType::F128 => self.view.as_array_dyn::<f64>()?.into_pyarray(py).into_any(),
-        })
-    }
-
-    /// change the data type of the view: (u)int(8/16/32) or float(32/64)
-    fn as_type(&self, dtype: String) -> PyResult<Self> {
-        Ok(PyView {
-            view: self.view.clone(),
-            dtype: dtype.parse()?,
         })
     }
 
@@ -475,6 +661,7 @@ impl PyView {
             PyView {
                 dtype: self.dtype.clone(),
                 view: self.view.max_proj(self.get_ax(axis)?)?,
+                ome: self.ome.clone(),
             }
             .into_bound_py_any(py)
         } else {
@@ -507,6 +694,7 @@ impl PyView {
             PyView {
                 dtype: self.dtype.clone(),
                 view: self.view.min_proj(self.get_ax(axis)?)?,
+                ome: self.ome.clone(),
             }
             .into_bound_py_any(py)
         } else {
@@ -544,6 +732,7 @@ impl PyView {
             PyView {
                 dtype,
                 view: self.view.mean_proj(self.get_ax(axis)?)?,
+                ome: self.ome.clone(),
             }
             .into_bound_py_any(py)
         } else {
@@ -580,6 +769,7 @@ impl PyView {
             PyView {
                 dtype,
                 view: self.view.sum_proj(self.get_ax(axis)?)?,
+                ome: self.ome.clone(),
             }
             .into_bound_py_any(py)
         } else {
@@ -594,6 +784,83 @@ impl PyView {
                 _ => self.view.sum::<i64>()?.into_pyobject(py)?.into_any(),
             })
         }
+    }
+
+    #[getter]
+    fn z_stack(&self) -> PyResult<bool> {
+        if let Some(s) = self.view.size_ax(Axis::Z) {
+            Ok(s > 1)
+        } else {
+            Ok(false)
+        }
+    }
+
+    #[getter]
+    fn time_series(&self) -> PyResult<bool> {
+        if let Some(s) = self.view.size_ax(Axis::T) {
+            Ok(s > 1)
+        } else {
+            Ok(false)
+        }
+    }
+
+    #[getter]
+    fn pixel_size(&self) -> PyResult<Option<f64>> {
+        Ok(self.ome.pixel_size()?)
+    }
+
+    #[getter]
+    fn delta_z(&self) -> PyResult<Option<f64>> {
+        Ok(self.ome.delta_z()?)
+    }
+
+    #[getter]
+    fn time_interval(&self) -> PyResult<Option<f64>> {
+        Ok(self.ome.time_interval()?)
+    }
+
+    fn exposure_time(&self, channel: usize) -> PyResult<Option<f64>> {
+        Ok(self.ome.exposure_time(channel)?)
+    }
+
+    fn binning(&self, channel: usize) -> Option<usize> {
+        self.ome.binning(channel)
+    }
+
+    fn laser_wavelengths(&self, channel: usize) -> PyResult<Option<f64>> {
+        Ok(self.ome.laser_wavelengths(channel)?)
+    }
+
+    fn laser_power(&self, channel: usize) -> PyResult<Option<f64>> {
+        Ok(self.ome.laser_powers(channel)?)
+    }
+
+    #[getter]
+    fn objective_name(&self) -> Option<String> {
+        self.ome.objective_name()
+    }
+
+    #[getter]
+    fn magnification(&self) -> Option<f64> {
+        self.ome.magnification()
+    }
+
+    #[getter]
+    fn tube_lens_name(&self) -> Option<String> {
+        self.ome.tube_lens_name()
+    }
+
+    fn filter_set_name(&self, channel: usize) -> Option<String> {
+        self.ome.filter_set_name(channel)
+    }
+
+    fn gain(&self, channel: usize) -> Option<f64> {
+        self.ome.gain(channel)
+    }
+
+    /// gives a helpful summary of the recorded experiment
+    fn summary(&self) -> PyResult<String> {
+        Ok(self.view.summary()?)
     }
 }
 

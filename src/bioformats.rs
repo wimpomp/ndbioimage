@@ -21,9 +21,21 @@ fn jvm() -> Rc<Jvm> {
                 .unwrap()
                 .to_path_buf();
 
-            let class_path = path.parent().unwrap();
+            let class_path = if path.join("jassets").exists() {
+                path.as_path()
+            } else {
+                path.parent().unwrap()
+            };
+            if !class_path.join("jassets").exists() {
+                panic!(
+                    "jassets directory does not exist in {}",
+                    class_path.display()
+                );
+            }
+
             Rc::new(
                 JvmBuilder::new()
+                    .skip_setting_native_lib()
                     .with_base_path(class_path.to_str().unwrap())
                     .build()
                     .expect("Failed to build JVM"),
@@ -33,11 +45,25 @@ fn jvm() -> Rc<Jvm> {
     })
 }
 
-#[cfg(feature = "python")]
-pub(crate) fn download_bioformats(gpl_formats: bool) -> Result<()> {
-    let path = crate::py::ndbioimage_file().unwrap();
+pub fn download_bioformats(gpl_formats: bool) -> Result<()> {
+    #[cfg(feature = "python")]
+    let path = crate::py::ndbioimage_file()?;
+
+    #[cfg(not(feature = "python"))]
+    let path = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+
     let class_path = path.parent().unwrap();
+    let jassets = class_path.join("jassets");
+    if !jassets.exists() {
+        std::fs::create_dir_all(jassets)?;
+    }
+    println!("installing jassets in {}", class_path.display());
     let jvm = JvmBuilder::new()
+        .skip_setting_native_lib()
         .with_base_path(class_path.to_str().unwrap())
         .with_maven_settings(j4rs::MavenSettings::new(vec![
             j4rs::MavenArtifactRepo::from(
@@ -46,10 +72,10 @@ pub(crate) fn download_bioformats(gpl_formats: bool) -> Result<()> {
         ]))
         .build()?;
 
-    jvm.deploy_artifact(&j4rs::MavenArtifact::from("ome:bioformats_package:8.1.0"))?;
+    jvm.deploy_artifact(&j4rs::MavenArtifact::from("ome:bioformats_package:8.3.0"))?;
 
     if gpl_formats {
-        jvm.deploy_artifact(&j4rs::MavenArtifact::from("ome:formats-gpl:8.1.0"))?;
+        jvm.deploy_artifact(&j4rs::MavenArtifact::from("ome:formats-gpl:8.3.0"))?;
     }
 
     Ok(())

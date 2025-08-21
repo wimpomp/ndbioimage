@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use ndarray::{Array, ArrayD, ArrayView, Axis, Dimension, RemoveAxis};
 
 /// a trait to define the min, max, sum and mean operations along an axis
@@ -196,6 +196,10 @@ macro_rules! impl_frame_stats_int {
 }
 
 impl_frame_stats_float_view!(f32, f64);
-impl_frame_stats_int_view!(u8, i8, u16, i16, u32, i32, u64, i64, u128, i128, usize, isize);
+impl_frame_stats_int_view!(
+    u8, i8, u16, i16, u32, i32, u64, i64, u128, i128, usize, isize
+);
 impl_frame_stats_float!(f32, f64);
-impl_frame_stats_int!(u8, i8, u16, i16, u32, i32, u64, i64, u128, i128, usize, isize);
+impl_frame_stats_int!(
+    u8, i8, u16, i16, u32, i32, u64, i64, u128, i128, usize, isize
+);

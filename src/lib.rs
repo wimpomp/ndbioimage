@@ -1,22 +1,31 @@
 mod bioformats;
 
 pub mod axes;
+pub mod metadata;
 #[cfg(feature = "python")]
 mod py;
 pub mod reader;
 pub mod stats;
 pub mod view;
 
+pub mod colors;
+#[cfg(feature = "movie")]
+pub mod movie;
+#[cfg(feature = "tiff")]
+pub mod tiff;
+
+pub use bioformats::download_bioformats;
+
 #[cfg(test)]
 mod tests {
-    use crate::stats::MinMax;
-    use ndarray::{Array, Array4, Array5, NewAxis};
-    use rayon::prelude::*;
-
     use crate::axes::Axis;
     use crate::reader::{Frame, Reader};
+    use crate::stats::MinMax;
+    use crate::view::Item;
     use anyhow::Result;
-    use ndarray::{s, Array2};
+    use ndarray::{Array, Array4, Array5, NewAxis};
+    use ndarray::{Array2, s};
+    use rayon::prelude::*;
 
     fn open(file: &str) -> Result<Reader> {
         let path = std::env::current_dir()?
@@ -137,7 +146,6 @@ mod tests {
         let a = a.slice(s![0, ..5, 0, NewAxis, 100..200, ..]);
         let v = view.slice(s![0, ..5, 0, NewAxis, 100..200, ..])?;
         assert_eq!(v.shape(), a.shape());
-        println!("\nshape: {:?}", v.shape());
         let a = a.slice(s![NewAxis, .., .., NewAxis, .., .., NewAxis]);
         let v = v.slice(s![NewAxis, .., .., NewAxis, .., .., NewAxis])?;
         assert_eq!(v.shape(), a.shape());
@@ -160,10 +168,7 @@ mod tests {
         assert_eq!(view.shape(), a.shape());
         let b: Array5<usize> = view.clone().try_into()?;
         assert_eq!(b.shape(), a.shape());
-
-        println!("{:?}", view.axes());
         let view = view.permute_axes(&[Axis::X, Axis::Z, Axis::Y])?;
-        println!("{:?}", view.axes());
         let a = a.permuted_axes([4, 1, 2, 0, 3]);
         assert_eq!(view.shape(), a.shape());
         let b: Array5<usize> = view.clone().try_into()?;
@@ -257,6 +262,109 @@ mod tests {
         let c = b.slice(s![0, 0, .., ..])?;
         let d = c.as_array::<usize>()?;
         assert_eq!(d.shape(), [1024, 1024]);
+        Ok(())
+    }
+
+    #[test]
+    fn item() -> Result<()> {
+        let file = "1xp53-01-AP1.czi";
+        let reader = open(file)?;
+        let view = reader.view();
+        let a = view.slice(s![.., 0, 0, 0, 0])?;
+        let b = a.slice(s![0])?;
+        let item = b.item::<usize>()?;
+        assert_eq!(item, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn slice_cztyx() -> Result<()> {
+        let file = "1xp53-01-AP1.czi";
+        let reader = open(file)?;
+        let view = reader.view().max_proj(Axis::Z)?.into_dyn();
+        println!("view.axes: {:?}", view.get_axes());
+        println!("view.slice: {:?}", view.get_slice());
+        let r = view.reset_axes()?;
+        println!("r.axes: {:?}", r.get_axes());
+        println!("r.slice: {:?}", r.get_slice());
+        let a = view.slice_cztyx(s![0, 0, 0, .., ..])?;
+        println!("a.axes: {:?}", a.get_axes());
+        println!("a.slice: {:?}", a.get_slice());
+        assert_eq!(a.axes(), [Axis::Y, Axis::X]);
+        Ok(())
+    }
+
+    #[test]
+    fn reset_axes() -> Result<()> {
+        let file = "1xp53-01-AP1.czi";
+        let reader = open(file)?;
+        let view = reader.view().max_proj(Axis::Z)?;
+        let view = view.reset_axes()?;
+        assert_eq!(view.axes(), [Axis::C, Axis::New, Axis::T, Axis::Y, Axis::X]);
+        let a = view.as_array::<f64>()?;
+        assert_eq!(a.ndim(), 5);
+        Ok(())
+    }
+
+    #[test]
+    fn reset_axes2() -> Result<()> {
+        let file = "Experiment-2029.czi";
+        let reader = open(file)?;
+        let view = reader.view().squeeze()?;
+        let a = view.reset_axes()?;
+        assert_eq!(a.axes(), [Axis::C, Axis::Z, Axis::T, Axis::Y, Axis::X]);
+        Ok(())
+    }
+
+    #[test]
+    fn reset_axes3() -> Result<()> {
+        let file = "Experiment-2029.czi";
+        let reader = open(file)?;
+        let view4 = reader.view().squeeze()?;
+        let view = view4.max_proj(Axis::Z)?.into_dyn();
+        let slice = view.slice_cztyx(s![0, .., .., .., ..])?.into_dyn();
+        let a = slice.as_array::<u16>()?;
+        assert_eq!(slice.shape(), [1, 10, 1280, 1280]);
+        assert_eq!(a.shape(), [1, 10, 1280, 1280]);
+        let r = slice.reset_axes()?;
+        let b = r.as_array::<u16>()?;
+        assert_eq!(r.shape(), [1, 1, 10, 1280, 1280]);
+        assert_eq!(b.shape(), [1, 1, 10, 1280, 1280]);
+        let q = slice.max_proj(Axis::C)?.max_proj(Axis::T)?;
+        let c = q.as_array::<f64>()?;
+        assert_eq!(q.shape(), [1, 1280, 1280]);
+        assert_eq!(c.shape(), [1, 1280, 1280]);
+        let p = q.reset_axes()?;
+        let d = p.as_array::<u16>()?;
+        println!("axes: {:?}", p.get_axes());
+        println!("operations: {:?}", p.get_operations());
+        println!("slice: {:?}", p.get_slice());
+        assert_eq!(p.shape(), [1, 1, 1, 1280, 1280]);
+        assert_eq!(d.shape(), [1, 1, 1, 1280, 1280]);
+        Ok(())
+    }
+
+    #[test]
+    fn max() -> Result<()> {
+        let file = "Experiment-2029.czi";
+        let reader = open(file)?;
+        let view = reader.view();
+        let m = view.max_proj(Axis::T)?;
+        let a = m.as_array::<u16>()?;
+        assert_eq!(m.shape(), [2, 1, 1280, 1280]);
+        assert_eq!(a.shape(), [2, 1, 1280, 1280]);
+        let mc = view.max_proj(Axis::C)?;
+        let a = mc.as_array::<u16>()?;
+        assert_eq!(mc.shape(), [1, 10, 1280, 1280]);
+        assert_eq!(a.shape(), [1, 10, 1280, 1280]);
+        let mz = mc.max_proj(Axis::Z)?;
+        let a = mz.as_array::<u16>()?;
+        assert_eq!(mz.shape(), [10, 1280, 1280]);
+        assert_eq!(a.shape(), [10, 1280, 1280]);
+        let mt = mz.max_proj(Axis::T)?;
+        let a = mt.as_array::<u16>()?;
+        assert_eq!(mt.shape(), [1280, 1280]);
+        assert_eq!(a.shape(), [1280, 1280]);
         Ok(())
     }
 }

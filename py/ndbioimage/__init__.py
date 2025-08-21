@@ -1,27 +1,23 @@
 from __future__ import annotations
 
 import os
-import re
 import warnings
 from abc import ABC
 from argparse import ArgumentParser
 from collections import OrderedDict
-from datetime import datetime
 from functools import cached_property, wraps
 from importlib.metadata import version
 from itertools import product
-from operator import truediv
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence, TypeVar
 
 import numpy as np
-import yaml
 from numpy.typing import ArrayLike, DTypeLike
-from ome_types import OME, from_xml, ureg
-from pint import set_application_registry
 from tiffwrite import FrameInfo, IJTiffParallel
 from tqdm.auto import tqdm
 
+from ome_metadata import Ome
+from ome_metadata.ome_metadata_rs import Length  # noqa
 from . import ndbioimage_rs as rs  # noqa
 from .transforms import Transform, Transforms  # noqa: F401
 
@@ -38,11 +34,6 @@ try:
 except Exception:  # noqa
     __git_commit_hash__ = "unknown"
 
-if hasattr(ureg, "formatter"):
-    ureg.formatter.default_format = "~P"
-else:
-    ureg.default_format = "~P"
-set_application_registry(ureg)
 warnings.filterwarnings("ignore", "Reference to unknown ID")
 Number = int | float | np.integer | np.floating
 
@@ -141,13 +132,13 @@ class OmeCache(DequeDict):
     def __reduce__(self) -> tuple[type, tuple]:
         return self.__class__, ()
 
-    def __getitem__(self, path: Path | str | tuple) -> OME:
+    def __getitem__(self, path: Path | str | tuple) -> Ome:
         if isinstance(path, tuple):
             return super().__getitem__(path)
         else:
             return super().__getitem__(self.path_and_lstat(path))
 
-    def __setitem__(self, path: Path | str | tuple, value: OME) -> None:
+    def __setitem__(self, path: Path | str | tuple, value: Ome) -> None:
         if isinstance(path, tuple):
             super().__setitem__(path, value)
         else:
@@ -180,7 +171,7 @@ def get_positions(path: str | Path) -> Optional[list[int]]:  # noqa
     return None
 
 
-class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
+class Imread(rs.View, np.lib.mixins.NDArrayOperatorsMixin, ABC):
     """class to read image files, while taking good care of important metadata,
     currently optimized for .czi files, but can open anything that bioformats can handle
         path: path to the image file
@@ -200,7 +191,7 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
              << plots frame at position z=1, t=0 (python type indexing)
             >> plt.imshow(im[:, 0].max('z'))
              << plots max-z projection at t=0
-            >> im.pxsize_um
+            >> im.pxsize
              << 0.09708737864077668 image-plane pixel size in um
             >> im.laserwavelengths
              << [642, 488]
@@ -208,291 +199,59 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
              << [0.02, 0.0005] in %
 
             See __init__ and other functions for more ideas.
+
+            # TODO: argmax, argmin, nanmax, nanmin, nanmean, nansum, nanstd, nanvar, std, var, squeeze
     """
 
-    ureg = ureg
+    def __getitem__(self, item):
+        new = super().__getitem__(item)
+        return Imread(new) if isinstance(new, rs.View) else new
 
-    def close(self) -> None:
-        self.reader.close()
+    def __copy__(self):
+        Imread(super().__copy__())
+
+    def copy(self):
+        Imread(super().copy())
+
+    def astype(self):
+        Imread(super().astype())
+
+    def squeeze(self):
+        new = super().squeeze()
+        return Imread(new) if isinstance(new, rs.View) else new
+
+    def min(self, *args, **kwargs) -> Imread | float:
+        new = super().min(*args, **kwargs)
+        return Imread(new) if isinstance(new, rs.View) else new
+
+    def max(self, *args, **kwargs) -> Imread | float:
+        new = super().max(*args, **kwargs)
+        return Imread(new) if isinstance(new, rs.View) else new
+
+    def mean(self, *args, **kwargs) -> Imread | float:
+        new = super().mean(*args, **kwargs)
+        return Imread(new) if isinstance(new, rs.View) else new
+
+    def sum(self, *args, **kwargs) -> Imread | float:
+        new = super().sum(*args, **kwargs)
+        return Imread(new) if isinstance(new, rs.View) else new
+
+    def transpose(self, *args, **kwargs) -> Imread | float:
+        new = super().transpose(*args, **kwargs)
+        return Imread(new) if isinstance(new, rs.View) else new
+
+    def swap_axes(self, *args, **kwargs) -> Imread | float:
+        new = super().swap_axes(*args, **kwargs)
+        return Imread(new) if isinstance(new, rs.View) else new
+
+    @property
+    def T(self) -> Imread | float:
+        return Imread(super().T)
 
     @staticmethod
     def get_positions(path: str | Path) -> Optional[list[int]]:  # noqa
         # TODO
         return None
-
-    def __init__(
-        self, path: Path | str = None, dtype: DTypeLike = None, axes: str = None
-    ) -> None:
-        super().__init__()
-        if path is not None:
-            path = Path(path)
-            path, series = self.split_path_series(path)
-            self.reader = rs.View(str(path), int(series))
-            if isinstance(path, Path) and path.exists():
-                self.title = self.path.name
-                self.acquisitiondate = datetime.fromtimestamp(
-                    self.path.stat().st_mtime
-                ).strftime("%y-%m-%dT%H:%M:%S")
-            else:  # ndarray
-                self.title = self.__class__.__name__
-                self.acquisitiondate = "now"
-
-            self.pcf = None
-            self.powermode = None
-            self.collimator = None
-            self.tirfangle = None
-            self.cyllens = ["None", "None"]
-            self.duolink = "None"
-            self.detector = [0, 1]
-            self.track = [0]
-            self.frameoffset = 0, 0  # how far apart the centers of frame and sensor are
-
-            # extract some metadata from ome
-            instrument = self.ome.instruments[0] if self.ome.instruments else None
-            image = self.ome.images[self.series if len(self.ome.images) > 1 else 0]
-            pixels = image.pixels
-            self.reader.dtype = str(pixels.type.value if dtype is None else dtype)
-            self.pxsize = pixels.physical_size_x_quantity
-            try:
-                self.exposuretime = tuple(
-                    find(image.pixels.planes, the_c=c).exposure_time_quantity
-                    for c in range(self.shape["c"])
-                )
-            except AttributeError:
-                self.exposuretime = ()
-
-            if self.zstack:
-                self.deltaz = image.pixels.physical_size_z_quantity
-                self.deltaz_um = (
-                    None if self.deltaz is None else self.deltaz.to(self.ureg.um).m
-                )
-            else:
-                self.deltaz = self.deltaz_um = None
-            if image.objective_settings:
-                self.objective = find(
-                    instrument.objectives, id=image.objective_settings.id
-                )
-            else:
-                self.objective = None
-            try:
-                t0 = find(image.pixels.planes, the_c=0, the_t=0, the_z=0).delta_t
-                t1 = find(
-                    image.pixels.planes, the_c=0, the_t=self.shape["t"] - 1, the_z=0
-                ).delta_t
-                self.timeinterval = (
-                    (t1 - t0) / (self.shape["t"] - 1)
-                    if self.shape["t"] > 1 and t1 > t0
-                    else None
-                )
-            except AttributeError:
-                self.timeinterval = None
-            try:
-                self.binning = [
-                    int(i)
-                    for i in image.pixels.channels[
-                        0
-                    ].detector_settings.binning.value.split("x")
-                ]
-                if self.pxsize is not None:
-                    self.pxsize *= self.binning[0]
-            except (AttributeError, IndexError, ValueError):
-                self.binning = None
-            self.channel_names = [channel.name for channel in image.pixels.channels]
-            self.channel_names += [
-                chr(97 + i) for i in range(len(self.channel_names), self.shape["c"])
-            ]
-            self.cnamelist = self.channel_names
-            try:
-                optovars = [
-                    objective
-                    for objective in instrument.objectives
-                    if "tubelens" in objective.id.lower()
-                ]
-            except AttributeError:
-                optovars = []
-            if len(optovars) == 0:
-                self.tubelens = None
-            else:
-                self.tubelens = optovars[0]
-            if self.objective:
-                if self.tubelens:
-                    self.magnification = (
-                        self.objective.nominal_magnification
-                        * self.tubelens.nominal_magnification
-                    )
-                else:
-                    self.magnification = self.objective.nominal_magnification
-                self.NA = self.objective.lens_na
-            else:
-                self.magnification = None
-                self.NA = None
-
-            self.gain = [
-                find(
-                    instrument.detectors, id=channel.detector_settings.id
-                ).amplification_gain
-                for channel in image.pixels.channels
-                if channel.detector_settings
-                and find(
-                    instrument.detectors, id=channel.detector_settings.id
-                ).amplification_gain
-            ]
-            self.laserwavelengths = [
-                (channel.excitation_wavelength_quantity.to(self.ureg.nm).m,)
-                for channel in pixels.channels
-                if channel.excitation_wavelength_quantity
-            ]
-            self.laserpowers = try_default(
-                lambda: [
-                    (1 - channel.light_source_settings.attenuation,)
-                    for channel in pixels.channels
-                ],
-                [],
-            )
-            self.filter = try_default(  # type: ignore
-                lambda: [
-                    find(instrument.filter_sets, id=channel.filter_set_ref.id).model
-                    for channel in image.pixels.channels
-                ],
-                None,
-            )
-            self.pxsize_um = (
-                None if self.pxsize is None else self.pxsize.to(self.ureg.um).m
-            )
-            self.exposuretime_s = [
-                None if i is None else i.to(self.ureg.s).m for i in self.exposuretime
-            ]
-
-            if axes is None:
-                self.axes = "".join(i for i in "cztyx" if self.shape[i] > 1)
-            elif axes.lower() == "full":
-                self.axes = "cztyx"
-            else:
-                self.axes = axes
-
-            m = self.extrametadata
-            if m is not None:
-                try:
-                    self.cyllens = m["CylLens"]
-                    self.duolink = m["DLFilterSet"].split(" & ")[m["DLFilterChannel"]]
-                    if "FeedbackChannels" in m:
-                        self.feedback = m["FeedbackChannels"]
-                    else:
-                        self.feedback = m["FeedbackChannel"]
-                except Exception:  # noqa
-                    self.cyllens = ["None", "None"]
-                    self.duolink = "None"
-                    self.feedback = []
-            try:
-                self.cyllenschannels = np.where(
-                    [
-                        self.cyllens[self.detector[c]].lower() != "none"
-                        for c in range(self.shape["c"])
-                    ]
-                )[0].tolist()
-            except Exception:  # noqa
-                pass
-            try:
-                s = int(re.findall(r"_(\d{3})_", self.duolink)[0]) * ureg.nm
-            except Exception:  # noqa
-                s = 561 * ureg.nm
-            try:
-                sigma = []
-                for c, d in enumerate(self.detector):
-                    emission = (np.hstack(self.laserwavelengths[c]) + 22) * ureg.nm
-                    sigma.append(
-                        [
-                            emission[emission > s].max(initial=0),
-                            emission[emission < s].max(initial=0),
-                        ][d]
-                    )
-                sigma = np.hstack(sigma)
-                sigma[sigma == 0] = 600 * ureg.nm
-                sigma /= 2 * self.NA * self.pxsize
-                self.sigma = sigma.magnitude.tolist()  # type: ignore
-            except Exception:  # noqa
-                self.sigma = [2] * self.shape["c"]
-            if not self.NA:
-                self.immersionN = 1
-            elif 1.5 < self.NA:
-                self.immersionN = 1.661
-            elif 1.3 < self.NA < 1.5:
-                self.immersionN = 1.518
-            elif 1 < self.NA < 1.3:
-                self.immersionN = 1.33
-            else:
-                self.immersionN = 1
-
-            p = re.compile(r"(\d+):(\d+)$")
-            try:
-                self.track, self.detector = zip(
-                    *[
-                        [
-                            int(i)
-                            for i in p.findall(
-                                find(
-                                    self.ome.images[self.series].pixels.channels,
-                                    id=f"Channel:{c}",
-                                ).detector_settings.id
-                            )[0]
-                        ]
-                        for c in range(self.shape["c"])
-                    ]
-                )
-            except Exception:  # noqa
-                pass
-
-    def __call__(
-        self, c: int = None, z: int = None, t: int = None, x: int = None, y: int = None
-    ) -> np.ndarray:
-        """same as im[] but allowing keyword axes, but slices need to be made with slice() or np.s_"""
-        return np.asarray(
-            self[
-                {
-                    k: slice(v) if v is None else v
-                    for k, v in dict(c=c, z=z, t=t, x=x, y=y).items()
-                }
-            ]
-        )
-
-    def __copy__(self) -> Imread:
-        return self.copy()
-
-    def __contains__(self, item: Number) -> bool:
-        raise NotImplementedError
-
-    def __enter__(self) -> Imread:
-        return self
-
-    def __exit__(self, *args: Any, **kwargs: Any) -> None:
-        pass
-
-    def __getitem__(
-        self,
-        n: int
-        | Sequence[int]
-        | Sequence[slice]
-        | slice
-        | type(Ellipsis)
-        | dict[str, int | Sequence[int] | Sequence[slice] | slice | type(Ellipsis)],
-    ) -> Number | Imread:
-        """slice like a numpy array but return an Imread instance"""
-        item = self.reader.__getitem__(n)
-        if isinstance(item, rs.View):
-            new = self.new()
-            new.reader = item
-            return new
-        else:
-            return item
-
-    def __len__(self) -> int:
-        return self.shape[0]
-
-    def __repr__(self) -> str:
-        return self.summary
-
-    def __str__(self) -> str:
-        return str(self.path)
 
     @staticmethod
     def as_axis(axis):
@@ -503,531 +262,9 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
         else:
             return str(axis)
 
-    # @property
-    # def __array_interface__(self) -> dict[str, Any]:
-    #     return dict(shape=tuple(self.shape), typestr=self.dtype.str, version=3, data=self.tobytes())
-
-    def tobytes(self) -> bytes:
-        return self.flatten().tobytes()
-
-    def __array__(self, dtype: DTypeLike = None, *_, **__) -> np.ndarray:
-        if dtype is not None and self.dtype != np.dtype(dtype):
-            reader = self.reader.as_type(str(np.dtype(dtype)))
-        else:
-            reader = self.reader
-        return reader.as_array()
-
-    def __array_arg_fun__(
-        self,
-        fun: Callable[[ArrayLike, Optional[int]], Number | np.ndarray],
-        axis: int | str = None,
-        out: np.ndarray = None,
-    ) -> Number | np.ndarray:
-        """frame-wise application of np.argmin and np.argmax"""
-        if axis is None:
-            value = arg = None
-            axes = "".join(i for i in self.axes if i in "yx") + "czt"
-            for idx in product(
-                range(self.shape["c"]), range(self.shape["z"]), range(self.shape["t"])
-            ):
-                yxczt = (slice(None), slice(None)) + idx
-                in_idx = tuple(yxczt["yxczt".find(i)] for i in self.axes)
-                new = np.asarray(self[in_idx])
-                new_arg = np.unravel_index(fun(new), new.shape)  # type: ignore
-                new_value = new[new_arg]
-                if value is None:
-                    arg = new_arg + idx
-                    value = new_value
-                elif value == new_value:
-                    a = np.ravel_multi_index(
-                        [arg[axes.find(i)] for i in self.axes], self.shape
-                    )
-                    b = np.ravel_multi_index(
-                        [(new_arg + idx)[axes.find(i)] for i in self.axes], self.shape
-                    )
-                    if b < a:
-                        arg = new_arg + idx
-                else:
-                    i = fun((value, new_value))  # type: ignore
-                    arg = (arg, new_arg + idx)[i]
-                    value = (value, new_value)[i]
-            arg = np.ravel_multi_index(
-                [arg[axes.find(i)] for i in self.axes], self.shape
-            )
-            if out is None:
-                return arg
-            else:
-                out[:] = arg
-                return out
-        else:
-            if isinstance(axis, str):
-                axis_str, axis_idx = axis, self.axes.index(axis)
-            else:
-                axis_str, axis_idx = self.axes[axis], axis
-            if axis_str not in self.axes:
-                raise IndexError(f"Axis {axis_str} not in {self.axes}.")
-            out_shape = list(self.shape)
-            out_axes = list(self.axes)
-            out_shape.pop(axis_idx)
-            out_axes.pop(axis_idx)
-            if out is None:
-                out = np.zeros(out_shape, int)
-            if axis_str in "yx":
-                for idx in product(
-                    range(self.shape["c"]),
-                    range(self.shape["z"]),
-                    range(self.shape["t"]),
-                ):
-                    yxczt = (slice(None), slice(None)) + idx
-                    out_idx = tuple(yxczt["yxczt".find(i)] for i in out_axes)
-                    in_idx = tuple(yxczt["yxczt".find(i)] for i in self.axes)
-                    new = self[in_idx]
-                    out[out_idx] = fun(np.asarray(new), new.axes.find(axis_str))
-            else:
-                value = np.zeros(out.shape, self.dtype)
-                for idx in product(
-                    range(self.shape["c"]),
-                    range(self.shape["z"]),
-                    range(self.shape["t"]),
-                ):
-                    yxczt = (slice(None), slice(None)) + idx
-                    out_idx = tuple(yxczt["yxczt".find(i)] for i in out_axes)
-                    in_idx = tuple(yxczt["yxczt".find(i)] for i in self.axes)
-                    new_value = self[in_idx]
-                    new_arg = np.full_like(new_value, idx["czt".find(axis_str)])
-                    if idx["czt".find(axis_str)] == 0:
-                        value[out_idx] = new_value
-                        out[out_idx] = new_arg
-                    else:
-                        old_value = value[out_idx]
-                        i = fun((old_value, new_value), 0)
-                        value[out_idx] = np.where(i, new_value, old_value)
-                        out[out_idx] = np.where(i, new_arg, out[out_idx])
-            return out
-
-    def __array_fun__(
-        self,
-        funs: Sequence[Callable[[ArrayLike], Number | np.ndarray]],
-        axis: int | str = None,
-        dtype: DTypeLike = None,
-        out: np.ndarray = None,
-        keepdims: bool = False,
-        initials: list[Number | np.ndarray] = None,
-        where: bool | int | np.ndarray = True,
-        ffuns: Sequence[Callable[[ArrayLike], np.ndarray]] = None,
-        cfun: Callable[..., np.ndarray] = None,
-    ) -> Number | np.ndarray:
-        """frame-wise application of np.min, np.max, np.sum, np.mean and their nan equivalents"""
-        p = re.compile(r"\d")
-        dtype = self.dtype if dtype is None else np.dtype(dtype)
-        if initials is None:
-            initials = [None for _ in funs]
-        if ffuns is None:
-            ffuns = [None for _ in funs]
-
-        def ffun_(frame: ArrayLike) -> np.ndarray:
-            return np.asarray(frame)
-
-        ffuns = [ffun_ if ffun is None else ffun for ffun in ffuns]
-        if cfun is None:
-
-            def cfun(*res):  # noqa
-                return res[0]
-
-        # TODO: smarter transforms
-        if axis is None:
-            for idx in product(
-                range(self.shape["c"]), range(self.shape["z"]), range(self.shape["t"])
-            ):
-                yxczt = (slice(None), slice(None)) + idx
-                in_idx = tuple(yxczt["yxczt".find(i)] for i in self.axes)
-                w = where if where is None or isinstance(where, bool) else where[in_idx]
-                initials = [
-                    fun(np.asarray(ffun(self[in_idx])), initial=initial, where=w)  # type: ignore
-                    for fun, ffun, initial in zip(funs, ffuns, initials)
-                ]
-            res = cfun(*initials)
-            res = (np.round(res) if dtype.kind in "ui" else res).astype(
-                p.sub("", dtype.name)
-            )
-            if keepdims:
-                res = np.array(res, dtype, ndmin=self.ndim)
-            if out is None:
-                return res
-            else:
-                out[:] = res
-                return out
-        else:
-            if isinstance(axis, str):
-                axis_str, axis_idx = axis, self.axes.index(axis)
-            else:
-                axis_idx = axis % self.ndim
-                axis_str = self.axes[axis_idx]
-            if axis_str not in self.axes:
-                raise IndexError(f"Axis {axis_str} not in {self.axes}.")
-            out_shape = list(self.shape)
-            out_axes = list(self.axes)
-            if not keepdims:
-                out_shape.pop(axis_idx)
-                out_axes.pop(axis_idx)
-            if out is None:
-                out = np.zeros(out_shape, dtype)
-            if axis_str in "yx":
-                yx = "yx" if self.axes.find("x") > self.axes.find("y") else "yx"
-                frame_ax = yx.find(axis_str)
-                for idx in product(
-                    range(self.shape["c"]),
-                    range(self.shape["z"]),
-                    range(self.shape["t"]),
-                ):
-                    yxczt = (slice(None), slice(None)) + idx
-                    out_idx = tuple(yxczt["yxczt".find(i)] for i in out_axes)
-                    in_idx = tuple(yxczt["yxczt".find(i)] for i in self.axes)
-                    w = (
-                        where
-                        if where is None or isinstance(where, bool)
-                        else where[in_idx]
-                    )
-                    res = cfun(
-                        *[
-                            fun(ffun(self[in_idx]), frame_ax, initial=initial, where=w)  # type: ignore
-                            for fun, ffun, initial in zip(funs, ffuns, initials)
-                        ]
-                    )
-                    out[out_idx] = (
-                        np.round(res) if out.dtype.kind in "ui" else res
-                    ).astype(p.sub("", dtype.name))
-            else:
-                tmps = [np.zeros(out_shape) for _ in ffuns]
-                for idx in product(
-                    range(self.shape["c"]),
-                    range(self.shape["z"]),
-                    range(self.shape["t"]),
-                ):
-                    yxczt = (slice(None), slice(None)) + idx
-                    out_idx = tuple(yxczt["yxczt".find(i)] for i in out_axes)
-                    in_idx = tuple(yxczt["yxczt".find(i)] for i in self.axes)
-
-                    if idx["czt".find(axis_str)] == 0:
-                        w = (
-                            where
-                            if where is None or isinstance(where, bool)
-                            else (where[in_idx],)
-                        )
-                        for tmp, fun, ffun, initial in zip(tmps, funs, ffuns, initials):
-                            tmp[out_idx] = fun(
-                                (ffun(self[in_idx]),), 0, initial=initial, where=w
-                            )  # type: ignore
-                    else:
-                        w = (
-                            where
-                            if where is None or isinstance(where, bool)
-                            else (np.ones_like(where[in_idx]), where[in_idx])
-                        )
-                        for tmp, fun, ffun in zip(tmps, funs, ffuns):
-                            tmp[out_idx] = fun(
-                                (tmp[out_idx], ffun(self[in_idx])), 0, where=w
-                            )  # type: ignore
-                out[...] = (
-                    np.round(cfun(*tmps)) if out.dtype.kind in "ui" else cfun(*tmps)
-                ).astype(p.sub("", dtype.name))
-            return out
-
-    def get_frame(self, c: int = 0, z: int = 0, t: int = 0) -> np.ndarray:
-        """retrieve a single frame at czt, sliced accordingly"""
-        return self.reader.get_frame(int(c), int(z), int(t))
-
-    @property
-    def path(self) -> Path:
-        return Path(self.reader.path)
-
-    @property
-    def series(self) -> int:
-        return self.reader.series
-
-    @property
-    def axes(self) -> str:
-        return "".join(self.reader.axes).lower()
-
-    @axes.setter
-    def axes(self, value: str) -> None:
-        value = value.lower()
-        self.reader = self.reader.__getitem__(
-            [slice(None) if ax in value else 0 for ax in self.axes]
-        ).transpose([ax for ax in value.upper()])
-
-    @property
-    def dtype(self) -> np.dtype:
-        return np.dtype(self.reader.dtype.lower())
-
-    @dtype.setter
-    def dtype(self, value: DTypeLike) -> None:
-        self.reader.dtype = str(np.dtype(value))
-
-    @cached_property
-    def extrametadata(self) -> Optional[Any]:
-        if isinstance(self.path, Path):
-            if self.path.with_suffix(".pzl2").exists():
-                pname = self.path.with_suffix(".pzl2")
-            elif self.path.with_suffix(".pzl").exists():
-                pname = self.path.with_suffix(".pzl")
-            else:
-                return None
-            try:
-                return self.get_config(pname)
-            except Exception:  # noqa
-                return None
-        return None
-
-    @property
-    def ndim(self) -> int:
-        return self.reader.ndim
-
-    @property
-    def size(self) -> int:
-        return self.reader.size
-
-    @property
-    def shape(self) -> Shape:
-        return Shape(self.reader.shape, "".join(self.reader.axes))
-
-    @property
-    def summary(self) -> str:
-        """gives a helpful summary of the recorded experiment"""
-        s = [f"path/filename: {self.path}", f"series/pos:    {self.series}"]
-        s.extend(
-            (
-                f"dtype:         {self.dtype}",
-                f"shape ({self.axes}):".ljust(15)
-                + f"{' x '.join(str(i) for i in self.shape)}",
-            )
-        )
-        if self.pxsize_um:
-            s.append(f"pixel size:    {1000 * self.pxsize_um:.2f} nm")
-        if self.zstack and self.deltaz_um:
-            s.append(f"z-interval:    {1000 * self.deltaz_um:.2f} nm")
-        if self.exposuretime_s and not all(e is None for e in self.exposuretime_s):
-            s.append(f"exposuretime:  {self.exposuretime_s[0]:.2f} s")
-        if self.timeseries and self.timeinterval:
-            s.append(f"time interval: {self.timeinterval:.3f} s")
-        if self.binning:
-            s.append("binning:       {}x{}".format(*self.binning))
-        if self.laserwavelengths:
-            s.append(
-                "laser colors:  "
-                + " | ".join(
-                    [
-                        " & ".join(len(w) * ("{:.0f}",)).format(*w)
-                        for w in self.laserwavelengths
-                    ]
-                )
-                + " nm"
-            )
-        if self.laserpowers:
-            s.append(
-                "laser powers:  "
-                + " | ".join(
-                    [
-                        " & ".join(len(p) * ("{:.3g}",)).format(*[100 * i for i in p])
-                        for p in self.laserpowers
-                    ]
-                )
-                + " %"
-            )
-        if self.objective and self.objective.model:
-            s.append(f"objective:     {self.objective.model}")
-        if self.magnification:
-            s.append(f"magnification: {self.magnification}x")
-        if self.tubelens and self.tubelens.model:
-            s.append(f"tubelens:      {self.tubelens.model}")
-        if self.filter:
-            s.append(f"filterset:     {self.filter}")
-        if self.powermode:
-            s.append(f"powermode:     {self.powermode}")
-        if self.collimator:
-            s.append(
-                "collimator:   "
-                + (" {}" * len(self.collimator)).format(*self.collimator)
-            )
-        if self.tirfangle:
-            s.append(
-                "TIRF angle:   "
-                + (" {:.2f}°" * len(self.tirfangle)).format(*self.tirfangle)
-            )
-        if self.gain:
-            s.append("gain:         " + (" {:.0f}" * len(self.gain)).format(*self.gain))
-        if self.pcf:
-            s.append("pcf:          " + (" {:.2f}" * len(self.pcf)).format(*self.pcf))
-        return "\n".join(s)
-
-    @property
-    def T(self) -> Imread:  # noqa
-        return self.transpose()  # type: ignore
-
-    @cached_property
-    def timeseries(self) -> bool:
-        return self.shape["t"] > 1
-
-    @cached_property
-    def zstack(self) -> bool:
-        return self.shape["z"] > 1
-
-    @wraps(np.ndarray.argmax)
-    def argmax(self, *args, **kwargs):
-        return self.__array_arg_fun__(np.argmax, *args, **kwargs)
-
-    @wraps(np.ndarray.argmin)
-    def argmin(self, *args, **kwargs):
-        return self.__array_arg_fun__(np.argmin, *args, **kwargs)
-
-    @wraps(np.ndarray.max)
-    def max(self, axis=None, *_, **__) -> Number | Imread:
-        reader = self.reader.max(self.as_axis(axis))
-        if isinstance(reader, rs.View):
-            new = self.new()
-            new.reader = reader
-            return new
-        else:
-            return reader
-
-    @wraps(np.ndarray.mean)
-    def mean(self, axis=None, *_, **__) -> Number | Imread:
-        reader = self.reader.mean(self.as_axis(axis))
-        if isinstance(reader, rs.View):
-            new = self.new()
-            new.reader = reader
-            return new
-        else:
-            return reader
-
-    @wraps(np.ndarray.min)
-    def min(self, axis=None, *_, **__) -> Number | Imread:
-        reader = self.reader.min(self.as_axis(axis))
-        if isinstance(reader, rs.View):
-            new = self.new()
-            new.reader = reader
-            return new
-        else:
-            return reader
-
-    @wraps(np.ndarray.sum)
-    def sum(self, axis=None, *_, **__) -> Number | Imread:
-        reader = self.reader.sum(self.as_axis(axis))
-        if isinstance(reader, rs.View):
-            new = self.new()
-            new.reader = reader
-            return new
-        else:
-            return reader
-
     @wraps(np.moveaxis)
     def moveaxis(self, source, destination):
         raise NotImplementedError("moveaxis is not implemented")
-
-    @wraps(np.nanmax)
-    def nanmax(
-        self, axis=None, out=None, keepdims=False, initial=None, where=True, **_
-    ):
-        return self.__array_fun__(
-            [np.nanmax], axis, None, out, keepdims, [initial], where
-        )
-
-    @wraps(np.nanmean)
-    def nanmean(
-        self, axis=None, dtype=None, out=None, keepdims=False, *, where=True, **_
-    ):
-        dtype = dtype or float
-
-        def sfun(frame):
-            return np.asarray(frame).astype(float)
-
-        def nfun(frame):
-            return np.invert(np.isnan(frame))
-
-        return self.__array_fun__(
-            [np.nansum, np.sum],
-            axis,
-            dtype,
-            out,
-            keepdims,
-            None,
-            where,
-            (sfun, nfun),
-            truediv,
-        )
-
-    @wraps(np.nanmin)
-    def nanmin(
-        self, axis=None, out=None, keepdims=False, initial=None, where=True, **_
-    ):
-        return self.__array_fun__(
-            [np.nanmin], axis, None, out, keepdims, [initial], where
-        )
-
-    @wraps(np.nansum)
-    def nansum(
-        self,
-        axis=None,
-        dtype=None,
-        out=None,
-        keepdims=False,
-        initial=None,
-        where=True,
-        **_,
-    ):
-        return self.__array_fun__(
-            [np.nansum], axis, dtype, out, keepdims, [initial], where
-        )
-
-    @wraps(np.nanstd)
-    def nanstd(
-        self, axis=None, dtype=None, out=None, ddof=0, keepdims=None, *, where=None
-    ):
-        return self.nanvar(axis, dtype, out, ddof, keepdims, where=where, std=True)
-
-    @wraps(np.nanvar)
-    def nanvar(
-        self,
-        axis=None,
-        dtype=None,
-        out=None,
-        ddof=0,
-        keepdims=None,
-        *,
-        where=True,
-        std=False,
-    ):
-        dtype = dtype or float
-
-        def sfun(frame):
-            return np.asarray(frame).astype(float)
-
-        def s2fun(frame):
-            return np.asarray(frame).astype(float) ** 2
-
-        def nfun(frame):
-            return np.invert(np.isnan(frame))
-
-        if std:
-
-            def cfun(s, s2, n):
-                return np.sqrt((s2 - s**2 / n) / (n - ddof))
-        else:
-
-            def cfun(s, s2, n):
-                return (s2 - s**2 / n) / (n - ddof)
-
-        return self.__array_fun__(
-            [np.nansum, np.nansum, np.sum],
-            axis,
-            dtype,
-            out,
-            keepdims,
-            None,
-            where,
-            (sfun, s2fun, nfun),
-            cfun,
-        )
 
     @wraps(np.ndarray.flatten)
     def flatten(self, *args, **kwargs) -> np.ndarray:
@@ -1037,167 +274,17 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
     def reshape(self, *args, **kwargs) -> np.ndarray:
         return np.asarray(self).reshape(*args, **kwargs)  # noqa
 
-    @wraps(np.ndarray.squeeze)
-    def squeeze(self, axes=None):
-        new = self.copy()
-        if axes is None:
-            axes = tuple(i for i, j in enumerate(new.shape) if j == 1)
-        elif isinstance(axes, Number):
-            axes = (axes,)
-        else:
-            axes = tuple(
-                new.axes.find(ax) if isinstance(ax, str) else ax for ax in axes
-            )
-        if any([new.shape[ax] != 1 for ax in axes]):
-            raise ValueError(
-                "cannot select an axis to squeeze out which has size not equal to one"
-            )
-        new.axes = "".join(j for i, j in enumerate(new.axes) if i not in axes)
-        return new
-
-    @wraps(np.ndarray.std)
-    def std(
-        self, axis=None, dtype=None, out=None, ddof=0, keepdims=None, *, where=True
-    ):
-        return self.var(axis, dtype, out, ddof, keepdims, where=where, std=True)  # type: ignore
-
-    @wraps(np.ndarray.swapaxes)
-    def swapaxes(self, axis1, axis2):
-        axis1 = self.as_axis(axis1)
-        axis2 = self.as_axis(axis2)
-        new = self.new()
-        new.reader = self.reader.swap_axes(axis1, axis2)
-        return new
-
-    @wraps(np.ndarray.transpose)
-    def transpose(self, *axes):
-        axes = [self.as_axis(axis) for axis in axes]
-        new = self.new()
-        new.reader = self.reader.transpose(axes)
-        return new
-
-    @wraps(np.ndarray.var)
-    def var(
-        self,
-        axis=None,
-        dtype=None,
-        out=None,
-        ddof=0,
-        keepdims=None,
-        *,
-        where=True,
-        std=False,
-    ):
-        dtype = dtype or float
-        n = np.prod(self.shape) if axis is None else self.shape[axis]
-
-        def sfun(frame):
-            return np.asarray(frame).astype(float)
-
-        def s2fun(frame):
-            return np.asarray(frame).astype(float) ** 2
-
-        if std:
-
-            def cfun(s, s2):
-                return np.sqrt((s2 - s**2 / n) / (n - ddof))
-        else:
-
-            def cfun(s, s2):
-                return (s2 - s**2 / n) / (n - ddof)
-
-        return self.__array_fun__(
-            [np.sum, np.sum],
-            axis,
-            dtype,
-            out,
-            keepdims,
-            None,
-            where,
-            (sfun, s2fun),
-            cfun,
-        )
-
-    def asarray(self) -> np.ndarray:
+    def as_array(self) -> np.ndarray:
         return self.__array__()
 
     @wraps(np.ndarray.astype)
-    def astype(self, dtype, *_, **__):
-        new = self.copy()
-        new.dtype = dtype
-        return new
-
-    def copy(self) -> Imread:
-        new = self.new()
-        new.reader = self.reader.copy()
-        return new
-
-    def new(self) -> Imread:
-        new = Imread.__new__(Imread)
-        new.__dict__.update(
-            {key: value for key, value in self.__dict__.items() if key != "reader"}
-        )
-        return new
-
-    def get_channel(self, channel_name: str | int) -> int:
-        if not isinstance(channel_name, str):
-            return channel_name
-        else:
-            c = [
-                i
-                for i, c in enumerate(self.channel_names)
-                if c.lower().startswith(channel_name.lower())
-            ]
-            assert len(c) > 0, f"Channel {c} not found in {self.channel_names}"
-            assert len(c) < 2, f"Channel {c} not unique in {self.channel_names}"
-            return c[0]
+    def astype(self, dtype: DTypeLike, *_, **__) -> Imread:
+        return Imread(super().astype(str(np.dtype(dtype))))
 
     @staticmethod
-    def get_config(file: Path | str) -> Any:
-        """Open a yml config file"""
-        loader = yaml.SafeLoader
-        loader.add_implicit_resolver(
-            r"tag:yaml.org,2002:float",
-            re.compile(
-                r"""^(?:
-                     [-+]?([0-9][0-9_]*)\.[0-9_]*(?:[eE][-+]?[0-9]+)?
-                    |[-+]?([0-9][0-9_]*)([eE][-+]?[0-9]+)
-                    |\.[0-9_]+(?:[eE][-+][0-9]+)?
-                    |[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*
-                    |[-+]?\\.(?:inf|Inf|INF)
-                    |\.(?:nan|NaN|NAN))$""",
-                re.X,
-            ),
-            list(r"-+0123456789."),
-        )
-        with open(file) as f:
-            return yaml.load(f, loader)
-
-    def get_czt(
-        self, c: int | Sequence[int], z: int | Sequence[int], t: int | Sequence[int]
-    ) -> tuple[list[int], list[int], list[int]]:
-        czt = []
-        for i, n in zip("czt", (c, z, t)):
-            if n is None:
-                czt.append(list(range(self.shape[i])))
-            elif isinstance(n, range):
-                if n.stop < 0:
-                    stop = n.stop % self.shape[i]
-                elif n.stop > self.shape[i]:
-                    stop = self.shape[i]
-                else:
-                    stop = n.stop
-                czt.append(list(range(n.start % self.shape[i], stop, n.step)))
-            elif isinstance(n, Number):
-                czt.append([n % self.shape[i]])
-            else:
-                czt.append([k % self.shape[i] for k in n])
-        return [self.get_channel(c) for c in czt[0]], *czt[1:3]  # type: ignore
-
-    @staticmethod
-    def fix_ome(ome: OME) -> OME:
+    def fix_ome(ome: Ome) -> Ome:
         # fix ome if necessary
-        for image in ome.images:
+        for image in ome.image:
             try:
                 if (
                     image.pixels.physical_size_z is None
@@ -1206,10 +293,7 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
                     z = np.array(
                         [
                             (
-                                plane.position_z
-                                * ureg.Quantity(plane.position_z_unit.value)
-                                .to(ureg.m)
-                                .magnitude,
+                                plane.position_z_unit.convert("um", plane.position_z),
                                 plane.the_z,
                             )
                             for plane in image.pixels.planes
@@ -1220,24 +304,24 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
                     image.pixels.physical_size_z = (
                         np.nanmean(np.true_divide(*np.diff(z[i], axis=0).T)) * 1e6
                     )
-                    image.pixels.physical_size_z_unit = "µm"  # type: ignore
+                    image.pixels.physical_size_z_unit = Length("um")  # type: ignore
             except Exception:  # noqa
                 pass
         return ome
 
     @staticmethod
-    def read_ome(path: str | Path) -> Optional[OME]:
+    def read_ome(path: str | Path) -> Optional[Ome]:
         path = Path(path)  # type: ignore
         if path.with_suffix(".ome.xml").exists():
-            return OME.from_xml(path.with_suffix(".ome.xml"))
+            return Ome.from_xml(path.with_suffix(".ome.xml").read_text())
         return None
 
-    def get_ome(self) -> OME:
+    def get_ome(self) -> Ome:
         """OME metadata structure"""
-        return from_xml(self.reader.get_ome_xml(), validate=False)
+        return Ome.from_xml(self.get_ome_xml())
 
     @cached_property
-    def ome(self) -> OME:
+    def ome(self) -> Ome:
         cache = OmeCache()
         if self.path not in cache:
             ome = self.read_ome(self.path)
@@ -1293,7 +377,11 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
             return a, b
 
         def cframe(
-            frame: ArrayLike, color: str, a: float, b: float, scale: float = 1  # noqa
+            frame: ArrayLike,
+            color: str,
+            a: float,
+            b: float,
+            scale: float = 1,  # noqa
         ) -> np.ndarray:
             color = to_rgb(color)
             frame = (frame - a) / (b - a)
@@ -1388,8 +476,8 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
                 self,
                 fname.with_suffix(".tif"),
                 dtype=pixel_type,
-                pxsize=self.pxsize_um,
-                deltaz=self.deltaz_um,
+                pxsize=self.pxsize,
+                deltaz=self.deltaz,
                 **kwargs,
             ) as tif:
                 for i, m in tqdm(  # noqa
@@ -1444,18 +532,6 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
         #         view.transform = Transforms().with_drift(self)
         # view.transform.adapt(view.frameoffset, view.shape.yxczt, view.channel_names)
         # return view
-
-    @staticmethod
-    def split_path_series(path: Path | str) -> tuple[Path, int]:
-        if isinstance(path, str):
-            path = Path(path)
-        if (
-            isinstance(path, Path)
-            and path.name.startswith("Pos")
-            and path.name.lstrip("Pos").isdigit()
-        ):
-            return path.parent, int(path.name.lstrip("Pos"))
-        return path, 0
 
 
 def main() -> None:
