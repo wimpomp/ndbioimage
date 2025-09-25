@@ -16,9 +16,14 @@ except ImportError:
     sitk = None
 
 try:
-    from pandas import DataFrame, Series, concat
+    import pandas as pd
 except ImportError:
-    DataFrame, Series, concat = None, None, None
+    pd = None
+
+try:
+    import polars as pl
+except ImportError:
+    pl = None
 
 
 if hasattr(yaml, "full_load"):
@@ -126,9 +131,13 @@ class Transforms(dict):
         return inverse
 
     def coords_pandas(self, array, channel_names, columns=None):
-        if isinstance(array, DataFrame):
-            return concat([self.coords_pandas(row, channel_names, columns) for _, row in array.iterrows()], axis=1).T
-        elif isinstance(array, Series):
+        if pd is None:
+            raise ImportError("pandas is not available")
+        if isinstance(array, pd.DataFrame):
+            return pd.concat(
+                [self.coords_pandas(row, channel_names, columns) for _, row in array.iterrows()], axis=1
+            ).T
+        elif isinstance(array, pd.Series):
             key = []
             if "C" in array:
                 key.append(channel_names[int(array["C"])])
@@ -459,14 +468,21 @@ class Transform:
         """
         if self.is_unity():
             return array.copy()
-        elif DataFrame is not None and isinstance(array, (DataFrame, Series)):
+        elif pd is not None and isinstance(array, (pd.DataFrame, pd.Series)):
             columns = columns or ["x", "y"]
             array = array.copy()
-            if isinstance(array, DataFrame):
+            if isinstance(array, pd.DataFrame):
                 array[columns] = self.coords(np.atleast_2d(array[columns].to_numpy()))
-            elif isinstance(array, Series):
+            elif isinstance(array, pd.Series):
                 array[columns] = self.coords(np.atleast_2d(array[columns].to_numpy()))[0]
             return array
+        elif pl is not None and isinstance(array, (pl.DataFrame, pl.LazyFrame)):
+            columns = columns or ["x", "y"]
+            if isinstance(array, pl.DataFrame):
+                xy = self.coords(np.atleast_2d(array.select(columns).to_numpy()))
+            elif isinstance(array, pl.LazyFrame):
+                xy = self.coords(np.atleast_2d(array.select(columns).collect().to_numpy()))
+            return array.with_columns(**{c: i for c, i in zip(columns, xy.T)})
         else:  # somehow we need to use the inverse here to get the same effect as when using self.frame
             return np.array([self.inverse.transform.TransformPoint(i.tolist()) for i in np.asarray(array)])
 

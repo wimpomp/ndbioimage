@@ -418,7 +418,7 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
             )
             return new
 
-    def __getstate__(self) -> dict[str:Any]:
+    def __getstate__(self) -> dict[str, Any]:
         return {key: value for key, value in self.__dict__.items() if key not in self.do_not_pickle} | {
             "cache_size": self.cache.maxlen
         }
@@ -1100,6 +1100,7 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
         t: str | int | Sequence[int] = None,  # noqa
         colors: tuple[str] = None,
         brightnesses: tuple[float] = None,
+        no_scale_movie_brightnesses: bool = False,
         scale: int = None,
         bar: bool = True,
         speed: float = None,
@@ -1133,9 +1134,20 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
             frame = np.dstack([255 * frame * i for i in color])
             return np.clip(np.round(frame), 0, 255).astype("uint8")
 
-        ab = list(zip(*[get_ab(i) for i in self.transpose("cztyx")]))  # type: ignore
+        if no_scale_movie_brightnesses and self.dtype.kind != "f":
+            info = np.iinfo(self.dtype)
+            ab = list(zip(*[(info.min, info.max) for _ in range(self.shape["c"])]))
+        elif no_scale_movie_brightnesses:
+            ab = list(zip(*[(0, 1) for _ in range(self.shape["c"])]))
+        else:
+            ab = list(zip(*[get_ab(i) for i in self.transpose("cztyx")]))  # type: ignore
         colors = colors or ("r", "g", "b")[: self.shape["c"]] + max(0, self.shape["c"] - 3) * ("w",)
-        brightnesses = brightnesses or (1,) * self.shape["c"]
+        if brightnesses is None:
+            brightnesses = (1,) * self.shape["c"]
+        elif len(brightnesses) == 1:
+            brightnesses = brightnesses * self.shape["c"]
+        elif len(brightnesses) != self.shape["c"]:
+            raise ValueError("brightnesses must have same length as shape[c]")
         scale = scale or 1
         shape_x = 2 * ((self.shape["x"] * scale + 1) // 2)
         shape_y = 2 * ((self.shape["y"] * scale + 1) // 2)
@@ -1538,6 +1550,13 @@ def main() -> None:
     parser.add_argument("-C", "--movie-colors", help="colors for channels in movie", type=str, nargs="*")
     parser.add_argument("-V", "--movie_speed", help="speed of move, default = 25 / 7", type=float, default=None)
     parser.add_argument("-B", "--movie-brightnesses", help="scale brightness of each channel", type=float, nargs="*")
+    parser.add_argument(
+        "-N",
+        "--no-scale-movie-brightnesses",
+        help="do not scale brightness of each channel,"
+        " if image file has an integer data type it's range will be scaled to [0, 1]",
+        action="store_true",
+    )
     parser.add_argument("-S", "--movie-scale", help="upscale movie xy size, int", type=float)
     args = parser.parse_args()
 
@@ -1559,6 +1578,7 @@ def main() -> None:
                         args.time,
                         args.movie_colors,
                         args.movie_brightnesses,
+                        args.no_scale_movie_brightnesses,
                         args.movie_scale,
                         bar=len(args.file) == 1,
                         speed=args.movie_speed,
