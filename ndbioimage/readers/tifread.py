@@ -34,15 +34,22 @@ class Reader(AbstractReader, ABC):
 
     def get_ome(self):
         if self.reader.is_ome:
-            match = re.match(r"^(.*)(pos.*)$", self.path.stem, flags=re.IGNORECASE)
-            if match is not None and len(match.groups()) == 2:
-                a, b = match.groups()
-                with tifffile.TiffFile(self.path.with_stem(a + re.sub(r"\d", "0", b))) as file0:
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore", category=UserWarning)
-                        ome = from_xml(file0.ome_metadata)
-                        ome.images = [image for image in ome.images if self.path.stem[: len(image.name)] == image.name]
-                        return ome
+            match = re.match(r"^(.*)(pos[\d_]+)(.*)$", self.path.name, flags=re.IGNORECASE)
+            if match is not None and len(match.groups()) == 3:
+                a, b, c = match.groups()
+                pat = re.compile(f"^{re.escape(a)}" + re.sub(r"\d+", r"\\d+", b) + f"{re.escape(c)}$")
+                for file in sorted(self.path.parent.iterdir(), key=lambda i: (len(i.name), i.name)):
+                    if pat.match(file.name):
+                        with tifffile.TiffFile(file) as tif:
+                            with warnings.catch_warnings():
+                                warnings.simplefilter("ignore", category=UserWarning)
+                                ome = from_xml(tif.ome_metadata)
+                                ome.images = [
+                                    image for image in ome.images if self.path.stem[: len(image.name)] == image.name
+                                ]
+                                if ome.images:
+                                    return ome
+            warnings.warn("could not find the ome.tif file containing the metadata")
 
         page = self.reader.pages[0]
         size_y = page.imagelength

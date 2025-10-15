@@ -1401,8 +1401,12 @@ class AbstractReader(Imread, metaclass=ABCMeta):
         else:
             self.objective = None
         try:
-            t0 = find(image.pixels.planes, the_c=0, the_t=0, the_z=0).delta_t
-            t1 = find(image.pixels.planes, the_c=0, the_t=self.shape["t"] - 1, the_z=0).delta_t
+            t0 = find(image.pixels.planes, the_c=0, the_t=0, the_z=0).delta_t_quantity.to(self.ureg.s).m
+            t1 = (
+                find(image.pixels.planes, the_c=0, the_t=self.shape["t"] - 1, the_z=0)
+                .delta_t_quantity.to(self.ureg.s)
+                .m
+            )
             self.timeinterval = (t1 - t0) / (self.shape["t"] - 1) if self.shape["t"] > 1 and t1 > t0 else None
         except AttributeError:
             self.timeinterval = None
