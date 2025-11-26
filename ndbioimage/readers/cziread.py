@@ -646,7 +646,7 @@ class OmeParse:
                     the_z=z,
                     the_t=t,
                     delta_t=delta_ts[t],
-                    exposure_time=exposure_times[c],
+                    exposure_time=exposure_times[min(c, len(exposure_times) - 1)] if len(exposure_times) > 0 else None,
                     position_x=self.positions[0],
                     position_x_unit=self.um,
                     position_y=self.positions[1],
