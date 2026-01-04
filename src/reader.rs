@@ -269,15 +269,7 @@ impl Deref for Reader {
     type Target = ImageReader;
 
     fn deref(&self) -> &Self::Target {
-        self.image_reader.get_or(|| {
-            let reader = ImageReader::new().unwrap();
-            let meta_data_tools = MetadataTools::new().unwrap();
-            let ome_meta = meta_data_tools.create_ome_xml_metadata().unwrap();
-            reader.set_metadata_store(ome_meta).unwrap();
-            reader.set_id(self.path.to_str().unwrap()).unwrap();
-            reader.set_series(self.series as i32).unwrap();
-            reader
-        })
+        self.get_reader().unwrap()
     }
 }
 
@@ -322,6 +314,7 @@ impl Reader {
             pixel_type: PixelType::I8,
             little_endian: false,
         };
+        reader.set_reader()?;
         reader.size_x = reader.get_size_x()? as usize;
         reader.size_y = reader.get_size_y()? as usize;
         reader.size_c = reader.get_size_c()? as usize;
@@ -330,6 +323,22 @@ impl Reader {
         reader.pixel_type = PixelType::try_from(reader.get_pixel_type()?)?;
         reader.little_endian = reader.is_little_endian()?;
         Ok(reader)
+    }
+
+    fn get_reader(&self) -> Result<&ImageReader, Error> {
+        self.image_reader.get_or_try(|| {
+            let reader = ImageReader::new()?;
+            let meta_data_tools = MetadataTools::new()?;
+            let ome_meta = meta_data_tools.create_ome_xml_metadata()?;
+            reader.set_metadata_store(ome_meta)?;
+            reader.set_id(self.path.to_str().ok_or(Error::InvalidFileName)?)?;
+            reader.set_series(self.series as i32)?;
+            Ok(reader)
+        })
+    }
+
+    pub fn set_reader(&self) -> Result<(), Error> {
+        self.get_reader().map(|_| ())
     }
 
     /// Get ome metadata as ome structure
@@ -473,6 +482,8 @@ impl Reader {
 
 impl Drop for Reader {
     fn drop(&mut self) {
-        let _ = self.close();
+        if let Ok(reader) = self.get_reader() {
+            reader.close().unwrap();
+        }
     }
 }
