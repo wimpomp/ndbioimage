@@ -50,10 +50,7 @@ pub fn download_bioformats(gpl_formats: bool) -> Result<(), Error> {
     let path = crate::py::ndbioimage_file();
 
     #[cfg(not(feature = "python"))]
-    let path = std::env::current_exe()?
-        .parent()
-        .unwrap()
-        .to_path_buf();
+    let path = std::env::current_exe()?.parent().unwrap().to_path_buf();
 
     let class_path = path.parent().unwrap();
     let jassets = class_path.join("jassets");

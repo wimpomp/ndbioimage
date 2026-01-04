@@ -47,6 +47,9 @@ optional = true
 
 [dev-dependencies]
 rayon = "1"
+downloader = "0.2"
+regex = "1"
+reqwest = { version = "0.13", features = ["blocking"] }
 
 [build-dependencies]
 j4rs = "0.24"

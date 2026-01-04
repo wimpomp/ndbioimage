@@ -26,6 +26,7 @@ mod tests {
     use crate::reader::{Frame, Reader};
     use crate::stats::MinMax;
     use crate::view::Item;
+    use downloader::{Download, Downloader};
     use ndarray::{Array, Array4, Array5, NewAxis};
     use ndarray::{Array2, s};
     use rayon::prelude::*;
@@ -36,6 +37,46 @@ mod tests {
             .join("files")
             .join(file);
         Reader::new(&path, 0)
+    }
+
+    #[test]
+    fn read_ome() -> Result<(), Box<dyn std::error::Error>> {
+        let path = std::env::current_dir()?.join("tests/files/ome");
+        std::fs::create_dir_all(&path)?;
+        let url =
+            "https://downloads.openmicroscopy.org/images/OME-TIFF/2016-06/bioformats-artificial/";
+        let page = reqwest::blocking::get(url)?.text()?;
+        let pat = regex::Regex::new(
+            r#"<a\s+href\s*=\s*"([^"<>]+)">[^<>]+</a>\s+\d{2}-\w{3}-\d{4}\s+\d{2}:\d{2}\s+(\d+)"#,
+        )?;
+        let mut downloads = Vec::new();
+        let mut files = Vec::new();
+        for line in page.lines() {
+            if let Some(cap) = pat.captures(line) {
+                let link = cap[1].trim().to_string();
+                let size = cap[2].trim().parse::<usize>()?;
+                if size < 10 * 1024usize.pow(2) {
+                    if !path.join(&link).exists() {
+                        downloads.push(Download::new(&format!("{}{}", url, link)));
+                    }
+                    files.push(path.join(link));
+                }
+            }
+        }
+        if !downloads.is_empty() {
+            let mut downloader = Downloader::builder().download_folder(&path).build()?;
+            downloader.download(&downloads)?;
+        }
+        let mut count = 0;
+        for file in files {
+            if let Ok(reader) = Reader::new(&file, 0) {
+                let _ome = reader.get_ome()?;
+                count += 1;
+            }
+        }
+        println!("count: {}", count);
+        assert!(count > 30);
+        Ok(())
     }
 
     fn get_pixel_type(file: &str) -> Result<String, Error> {
