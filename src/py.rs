@@ -1,21 +1,27 @@
 use crate::axes::Axis;
 use crate::bioformats::download_bioformats;
+use crate::error::Error;
 use crate::metadata::Metadata;
 use crate::reader::{PixelType, Reader};
 use crate::view::{Item, View};
-use anyhow::{Result, anyhow};
 use itertools::Itertools;
 use ndarray::{Ix0, IxDyn, SliceInfoElem};
 use numpy::IntoPyArray;
 use ome_metadata::Ome;
 use pyo3::IntoPyObjectExt;
-use pyo3::exceptions::PyNotImplementedError;
+use pyo3::exceptions::{PyNotImplementedError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyEllipsis, PyInt, PyList, PySlice, PySliceMethods, PyString, PyTuple};
 use serde::{Deserialize, Serialize};
 use serde_json::{from_str, to_string};
 use std::path::PathBuf;
 use std::sync::Arc;
+
+impl From<crate::error::Error> for PyErr {
+    fn from(err: crate::error::Error) -> PyErr {
+        PyErr::new::<PyValueError, _>(err.to_string())
+    }
+}
 
 #[pyclass(module = "ndbioimage.ndbioimage_rs")]
 struct ViewConstructor;
@@ -36,7 +42,9 @@ impl ViewConstructor {
         if let Ok(new) = from_str(&state) {
             Ok(new)
         } else {
-            Err(anyhow!("cannot parse state").into())
+            Err(PyErr::new::<PyValueError, _>(
+                "cannot parse state".to_string(),
+            ))
         }
     }
 }
@@ -55,11 +63,24 @@ impl PyView {
     /// new view on a file at path, open series #, open as dtype: (u)int(8/16/32) or float(32/64)
     #[new]
     #[pyo3(signature = (path, series = 0, dtype = "uint16", axes = "cztyx"))]
-    fn new(path: Bound<'_, PyAny>, series: usize, dtype: &str, axes: &str) -> PyResult<Self> {
+    fn new<'py>(
+        py: Python<'py>,
+        path: Bound<'py, PyAny>,
+        series: usize,
+        dtype: &str,
+        axes: &str,
+    ) -> PyResult<Self> {
         if path.is_instance_of::<Self>() {
-            Ok(path.downcast_into::<Self>()?.extract::<Self>()?)
+            Ok(path.cast_into::<Self>()?.extract::<Self>()?)
         } else {
-            let mut path = PathBuf::from(path.downcast_into::<PyString>()?.extract::<String>()?);
+            let builtins = PyModule::import(py, "builtins")?;
+            let mut path = PathBuf::from(
+                builtins
+                    .getattr("str")?
+                    .call1((path,))?
+                    .cast_into::<PyString>()?
+                    .extract::<String>()?,
+            );
             if path.is_dir() {
                 for file in path.read_dir()?.flatten() {
                     let p = file.path();
@@ -72,7 +93,7 @@ impl PyView {
             let axes = axes
                 .chars()
                 .map(|a| a.to_string().parse())
-                .collect::<Result<Vec<Axis>>>()?;
+                .collect::<Result<Vec<Axis>, Error>>()?;
             let reader = Reader::new(&path, series)?;
             let view = View::new_with_axes(Arc::new(reader), axes)?;
             let dtype = dtype.parse()?;
@@ -187,9 +208,9 @@ impl PyView {
         n: Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let slice: Vec<_> = if n.is_instance_of::<PyTuple>() {
-            n.downcast_into::<PyTuple>()?.into_iter().collect()
+            n.cast_into::<PyTuple>()?.into_iter().collect()
         } else if n.is_instance_of::<PyList>() {
-            n.downcast_into::<PyList>()?.into_iter().collect()
+            n.cast_into::<PyList>()?.into_iter().collect()
         } else {
             vec![n]
         };
@@ -198,11 +219,9 @@ impl PyView {
         let shape = self.view.shape();
         for (i, (s, t)) in slice.iter().zip(shape.iter()).enumerate() {
             if s.is_instance_of::<PyInt>() {
-                new_slice.push(SliceInfoElem::Index(
-                    s.downcast::<PyInt>()?.extract::<isize>()?,
-                ));
+                new_slice.push(SliceInfoElem::Index(s.cast::<PyInt>()?.extract::<isize>()?));
             } else if s.is_instance_of::<PySlice>() {
-                let u = s.downcast::<PySlice>()?.indices(*t as isize)?;
+                let u = s.cast::<PySlice>()?.indices(*t as isize)?;
                 new_slice.push(SliceInfoElem::Slice {
                     start: u.start,
                     end: Some(u.stop),
@@ -210,20 +229,24 @@ impl PyView {
                 });
             } else if s.is_instance_of::<PyEllipsis>() {
                 if ellipsis.is_some() {
-                    return Err(anyhow!("cannot have more than one ellipsis").into());
+                    return Err(PyErr::new::<PyValueError, _>(
+                        "cannot have more than one ellipsis".to_string(),
+                    ));
                 }
                 let _ = ellipsis.insert(i);
             } else {
-                return Err(anyhow!("cannot convert {:?} to slice", s).into());
+                return Err(PyErr::new::<PyValueError, _>(format!(
+                    "cannot convert {:?} to slice",
+                    s
+                )));
             }
         }
         if new_slice.len() > shape.len() {
-            return Err(anyhow!(
+            return Err(PyErr::new::<PyValueError, _>(format!(
                 "got more indices ({}) than dimensions ({})",
                 new_slice.len(),
                 shape.len()
-            )
-            .into());
+            )));
         }
         while new_slice.len() < shape.len() {
             if let Some(i) = ellipsis {
@@ -331,15 +354,22 @@ impl PyView {
         }
     }
 
-    fn __contains__(&self, _item: Bound<'_, PyAny>) -> PyResult<bool> {
+    fn __contains__(&self, _item: Bound<PyAny>) -> PyResult<bool> {
         Err(PyNotImplementedError::new_err("contains not implemented"))
     }
 
-    fn __enter__<'p>(slf: PyRef<'p, Self>, _py: Python<'p>) -> PyResult<PyRef<'p, Self>> {
+    fn __enter__<'py>(slf: PyRef<'py, Self>) -> PyResult<PyRef<'py, Self>> {
         Ok(slf)
     }
 
-    fn __exit__(&self) -> PyResult<()> {
+    #[allow(unused_variables)]
+    #[pyo3(signature = (exc_type=None, exc_val=None, exc_tb=None))]
+    fn __exit__(
+        &self,
+        exc_type: Option<Bound<PyAny>>,
+        exc_val: Option<Bound<PyAny>>,
+        exc_tb: Option<Bound<PyAny>>,
+    ) -> PyResult<()> {
         self.close()
     }
 
@@ -347,7 +377,9 @@ impl PyView {
         if let Ok(s) = to_string(self) {
             Ok((ViewConstructor, (s,)))
         } else {
-            Err(anyhow!("cannot get state").into())
+            Err(PyErr::new::<PyValueError, _>(
+                "cannot get state".to_string(),
+            ))
         }
     }
 
@@ -549,28 +581,31 @@ impl PyView {
 
     /// find the position of an axis
     #[pyo3(text_signature = "axis: str | int")]
-    fn get_ax(&self, axis: Bound<'_, PyAny>) -> PyResult<usize> {
+    fn get_ax(&self, axis: Bound<PyAny>) -> PyResult<usize> {
         if axis.is_instance_of::<PyString>() {
             let axis = axis
-                .downcast_into::<PyString>()?
+                .cast_into::<PyString>()?
                 .extract::<String>()?
                 .parse::<Axis>()?;
-            Ok(self
-                .view
+            self.view
                 .axes()
                 .iter()
                 .position(|a| *a == axis)
-                .ok_or_else(|| anyhow!("cannot find axis {:?}", axis))?)
+                .ok_or_else(|| {
+                    PyErr::new::<PyValueError, _>(format!("cannot find axis {:?}", axis))
+                })
         } else if axis.is_instance_of::<PyInt>() {
-            Ok(axis.downcast_into::<PyInt>()?.extract::<usize>()?)
+            Ok(axis.cast_into::<PyInt>()?.extract::<usize>()?)
         } else {
-            Err(anyhow!("cannot convert to axis").into())
+            Err(PyErr::new::<PyValueError, _>(
+                "cannot convert to axis".to_string(),
+            ))
         }
     }
 
     /// swap two axes
     #[pyo3(text_signature = "ax0: str | int, ax1: str | int")]
-    fn swap_axes(&self, ax0: Bound<'_, PyAny>, ax1: Bound<'_, PyAny>) -> PyResult<Self> {
+    fn swap_axes(&self, ax0: Bound<PyAny>, ax1: Bound<PyAny>) -> PyResult<Self> {
         let ax0 = self.get_ax(ax0)?;
         let ax1 = self.get_ax(ax1)?;
         let view = self.view.swap_axes(ax0, ax1)?;
@@ -583,7 +618,7 @@ impl PyView {
 
     /// permute the order of the axes
     #[pyo3(signature = (axes = None), text_signature = "axes: list[str | int] = None")]
-    fn transpose(&self, axes: Option<Vec<Bound<'_, PyAny>>>) -> PyResult<Self> {
+    fn transpose(&self, axes: Option<Vec<Bound<PyAny>>>) -> PyResult<Self> {
         let view = if let Some(axes) = axes {
             let ax = axes
                 .into_iter()
@@ -651,12 +686,30 @@ impl PyView {
     }
 
     /// get the maximum overall or along a given axis
-    #[pyo3(signature = (axis = None), text_signature = "axis: str | int")]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (axis=None, dtype=None, out=None, keepdims=false, initial=0, r#where=true), text_signature = "axis: str | int")]
     fn max<'py>(
         &self,
         py: Python<'py>,
         axis: Option<Bound<'py, PyAny>>,
+        dtype: Option<Bound<'py, PyAny>>,
+        out: Option<Bound<'py, PyAny>>,
+        keepdims: bool,
+        initial: Option<usize>,
+        r#where: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
+        if let Some(i) = initial
+            && i != 0
+        {
+            Err(Error::NotImplemented(
+                "arguments beyond axis are not implemented".to_string(),
+            ))?;
+        }
+        if dtype.is_some() || out.is_some() || keepdims || !r#where {
+            Err(Error::NotImplemented(
+                "arguments beyond axis are not implemented".to_string(),
+            ))?;
+        }
         if let Some(axis) = axis {
             PyView {
                 dtype: self.dtype.clone(),
@@ -684,12 +737,30 @@ impl PyView {
     }
 
     /// get the minimum overall or along a given axis
-    #[pyo3(signature = (axis = None), text_signature = "axis: str | int")]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (axis=None, dtype=None, out=None, keepdims=false, initial=0, r#where=true), text_signature = "axis: str | int")]
     fn min<'py>(
         &self,
         py: Python<'py>,
         axis: Option<Bound<'py, PyAny>>,
+        dtype: Option<Bound<'py, PyAny>>,
+        out: Option<Bound<'py, PyAny>>,
+        keepdims: bool,
+        initial: Option<usize>,
+        r#where: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
+        if let Some(i) = initial
+            && i != 0
+        {
+            Err(Error::NotImplemented(
+                "arguments beyond axis are not implemented".to_string(),
+            ))?;
+        }
+        if dtype.is_some() || out.is_some() || keepdims || !r#where {
+            Err(Error::NotImplemented(
+                "arguments beyond axis are not implemented".to_string(),
+            ))?;
+        }
         if let Some(axis) = axis {
             PyView {
                 dtype: self.dtype.clone(),
@@ -716,13 +787,21 @@ impl PyView {
         }
     }
 
-    /// get the mean overall or along a given axis
-    #[pyo3(signature = (axis = None), text_signature = "axis: str | int")]
+    #[pyo3(signature = (axis=None, dtype=None, out=None, keepdims=false, *, r#where=true), text_signature = "axis: str | int")]
     fn mean<'py>(
         &self,
         py: Python<'py>,
         axis: Option<Bound<'py, PyAny>>,
+        dtype: Option<Bound<'py, PyAny>>,
+        out: Option<Bound<'py, PyAny>>,
+        keepdims: bool,
+        r#where: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
+        if dtype.is_some() || out.is_some() || keepdims || !r#where {
+            Err(Error::NotImplemented(
+                "arguments beyond axis are not implemented".to_string(),
+            ))?;
+        }
         if let Some(axis) = axis {
             let dtype = if let PixelType::F32 = self.dtype {
                 PixelType::F32
@@ -744,12 +823,30 @@ impl PyView {
     }
 
     /// get the sum overall or along a given axis
-    #[pyo3(signature = (axis = None), text_signature = "axis: str | int")]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (axis=None, dtype=None, out=None, keepdims=false, initial=0, r#where=true), text_signature = "axis: str | int")]
     fn sum<'py>(
         &self,
         py: Python<'py>,
         axis: Option<Bound<'py, PyAny>>,
+        dtype: Option<Bound<'py, PyAny>>,
+        out: Option<Bound<'py, PyAny>>,
+        keepdims: bool,
+        initial: Option<usize>,
+        r#where: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
+        if let Some(i) = initial
+            && i != 0
+        {
+            Err(Error::NotImplemented(
+                "arguments beyond axis are not implemented".to_string(),
+            ))?;
+        }
+        if dtype.is_some() || out.is_some() || keepdims || !r#where {
+            Err(Error::NotImplemented(
+                "arguments beyond axis are not implemented".to_string(),
+            ))?;
+        }
         let dtype = match self.dtype {
             PixelType::I8 => PixelType::I16,
             PixelType::U8 => PixelType::U16,
@@ -864,29 +961,29 @@ impl PyView {
     }
 }
 
-pub(crate) fn ndbioimage_file() -> anyhow::Result<PathBuf> {
-    let file = Python::with_gil(|py| {
+pub(crate) fn ndbioimage_file() -> PathBuf {
+    let file = Python::attach(|py| {
         py.import("ndbioimage")
             .unwrap()
             .filename()
             .unwrap()
             .to_string()
     });
-    Ok(PathBuf::from(file))
+    PathBuf::from(file)
+}
+
+#[pyfunction]
+#[pyo3(name = "download_bioformats")]
+fn py_download_bioformats(gpl_formats: bool) -> PyResult<()> {
+    download_bioformats(gpl_formats)?;
+    Ok(())
 }
 
 #[pymodule]
 #[pyo3(name = "ndbioimage_rs")]
-fn ndbioimage_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn ndbioimage_rs(m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PyView>()?;
     m.add_class::<ViewConstructor>()?;
-
-    #[pyfn(m)]
-    #[pyo3(name = "download_bioformats")]
-    fn py_download_bioformats(gpl_formats: bool) -> PyResult<()> {
-        download_bioformats(gpl_formats)?;
-        Ok(())
-    }
-
+    m.add_function(wrap_pyfunction!(py_download_bioformats, m)?)?;
     Ok(())
 }

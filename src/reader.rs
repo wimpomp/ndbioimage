@@ -1,8 +1,8 @@
 use crate::axes::Axis;
 use crate::bioformats;
 use crate::bioformats::{DebugTools, ImageReader, MetadataTools};
+use crate::error::Error;
 use crate::view::View;
-use anyhow::{Error, Result, anyhow};
 use ndarray::{Array2, Ix5, s};
 use num::{FromPrimitive, Zero};
 use ome_metadata::Ome;
@@ -15,16 +15,16 @@ use std::str::FromStr;
 use std::sync::Arc;
 use thread_local::ThreadLocal;
 
-pub fn split_path_and_series<P>(path: P) -> Result<(PathBuf, Option<usize>)>
+pub fn split_path_and_series<P>(path: P) -> Result<(PathBuf, Option<usize>), Error>
 where
     P: Into<PathBuf>,
 {
     let path = path.into();
     let file_name = path
         .file_name()
-        .ok_or_else(|| anyhow!("No file name"))?
+        .ok_or(Error::InvalidFileName)?
         .to_str()
-        .ok_or_else(|| anyhow!("No file name"))?;
+        .ok_or(Error::InvalidFileName)?;
     if file_name.to_lowercase().starts_with("pos") {
         if let Some(series) = file_name.get(3..) {
             if let Ok(series) = series.parse::<usize>() {
@@ -72,7 +72,7 @@ impl TryFrom<i32> for PixelType {
             10 => Ok(PixelType::I128),
             11 => Ok(PixelType::U128),
             12 => Ok(PixelType::F128),
-            _ => Err(anyhow::anyhow!("Unknown pixel type {}", value)),
+            _ => Err(Error::UnknownPixelType(value.to_string())),
         }
     }
 }
@@ -95,7 +95,7 @@ impl FromStr for PixelType {
             "int128" | "i128" => Ok(PixelType::I128),
             "uint128" | "u128" => Ok(PixelType::U128),
             "extended" | "f128" => Ok(PixelType::F128),
-            _ => Err(anyhow::anyhow!("Unknown pixel type {}", s)),
+            _ => Err(Error::UnknownPixelType(s.to_string())),
         }
     }
 }
@@ -163,73 +163,73 @@ where
         let arr = match self {
             Frame::I8(v) => v.mapv_into_any(|x| {
                 T::from_i8(x).unwrap_or_else(|| {
-                    err = Err(anyhow!("cannot convert {} into {}", x, type_name::<T>()));
+                    err = Err(Error::Cast(x.to_string(), type_name::<T>().to_string()));
                     T::zero()
                 })
             }),
             Frame::U8(v) => v.mapv_into_any(|x| {
                 T::from_u8(x).unwrap_or_else(|| {
-                    err = Err(anyhow!("cannot convert {} into {}", x, type_name::<T>()));
+                    err = Err(Error::Cast(x.to_string(), type_name::<T>().to_string()));
                     T::zero()
                 })
             }),
             Frame::I16(v) => v.mapv_into_any(|x| {
                 T::from_i16(x).unwrap_or_else(|| {
-                    err = Err(anyhow!("cannot convert {} into {}", x, type_name::<T>()));
+                    err = Err(Error::Cast(x.to_string(), type_name::<T>().to_string()));
                     T::zero()
                 })
             }),
             Frame::U16(v) => v.mapv_into_any(|x| {
                 T::from_u16(x).unwrap_or_else(|| {
-                    err = Err(anyhow!("cannot convert {} into {}", x, type_name::<T>()));
+                    err = Err(Error::Cast(x.to_string(), type_name::<T>().to_string()));
                     T::zero()
                 })
             }),
             Frame::I32(v) => v.mapv_into_any(|x| {
                 T::from_i32(x).unwrap_or_else(|| {
-                    err = Err(anyhow!("cannot convert {} into {}", x, type_name::<T>()));
+                    err = Err(Error::Cast(x.to_string(), type_name::<T>().to_string()));
                     T::zero()
                 })
             }),
             Frame::U32(v) => v.mapv_into_any(|x| {
                 T::from_u32(x).unwrap_or_else(|| {
-                    err = Err(anyhow!("cannot convert {} into {}", x, type_name::<T>()));
+                    err = Err(Error::Cast(x.to_string(), type_name::<T>().to_string()));
                     T::zero()
                 })
             }),
             Frame::F32(v) => v.mapv_into_any(|x| {
                 T::from_f32(x).unwrap_or_else(|| {
-                    err = Err(anyhow!("cannot convert {} into {}", x, type_name::<T>()));
+                    err = Err(Error::Cast(x.to_string(), type_name::<T>().to_string()));
                     T::zero()
                 })
             }),
             Frame::F64(v) | Frame::F128(v) => v.mapv_into_any(|x| {
                 T::from_f64(x).unwrap_or_else(|| {
-                    err = Err(anyhow!("cannot convert {} into {}", x, type_name::<T>()));
+                    err = Err(Error::Cast(x.to_string(), type_name::<T>().to_string()));
                     T::zero()
                 })
             }),
             Frame::I64(v) => v.mapv_into_any(|x| {
                 T::from_i64(x).unwrap_or_else(|| {
-                    err = Err(anyhow!("cannot convert {} into {}", x, type_name::<T>()));
+                    err = Err(Error::Cast(x.to_string(), type_name::<T>().to_string()));
                     T::zero()
                 })
             }),
             Frame::U64(v) => v.mapv_into_any(|x| {
                 T::from_u64(x).unwrap_or_else(|| {
-                    err = Err(anyhow!("cannot convert {} into {}", x, type_name::<T>()));
+                    err = Err(Error::Cast(x.to_string(), type_name::<T>().to_string()));
                     T::zero()
                 })
             }),
             Frame::I128(v) => v.mapv_into_any(|x| {
                 T::from_i128(x).unwrap_or_else(|| {
-                    err = Err(anyhow!("cannot convert {} into {}", x, type_name::<T>()));
+                    err = Err(Error::Cast(x.to_string(), type_name::<T>().to_string()));
                     T::zero()
                 })
             }),
             Frame::U128(v) => v.mapv_into_any(|x| {
                 T::from_u128(x).unwrap_or_else(|| {
-                    err = Err(anyhow!("cannot convert {} into {}", x, type_name::<T>()));
+                    err = Err(Error::Cast(x.to_string(), type_name::<T>().to_string()));
                     T::zero()
                 })
             }),
@@ -305,7 +305,7 @@ impl Debug for Reader {
 
 impl Reader {
     /// Create a new reader for the image file at a path, and open series #.
-    pub fn new<P>(path: P, series: usize) -> Result<Self>
+    pub fn new<P>(path: P, series: usize) -> Result<Self, Error>
     where
         P: AsRef<Path>,
     {
@@ -333,7 +333,7 @@ impl Reader {
     }
 
     /// Get ome metadata as ome structure
-    pub fn get_ome(&self) -> Result<Ome> {
+    pub fn get_ome(&self) -> Result<Ome, Error> {
         let mut ome = self.ome_xml()?.parse::<Ome>()?;
         if let Some(image) = ome.image.as_ref() {
             if image.len() > 1 {
@@ -344,11 +344,11 @@ impl Reader {
     }
 
     /// Get ome metadata as xml string
-    pub fn get_ome_xml(&self) -> Result<String> {
+    pub fn get_ome_xml(&self) -> Result<String, Error> {
         self.ome_xml()
     }
 
-    fn deinterleave(&self, bytes: Vec<u8>, channel: usize) -> Result<Vec<u8>> {
+    fn deinterleave(&self, bytes: Vec<u8>, channel: usize) -> Result<Vec<u8>, Error> {
         let chunk_size = match self.pixel_type {
             PixelType::I8 => 1,
             PixelType::U8 => 1,
@@ -373,7 +373,8 @@ impl Reader {
     }
 
     /// Retrieve fame at channel c, slize z and time t.
-    pub fn get_frame(&self, c: usize, z: usize, t: usize) -> Result<Frame> {
+    #[allow(clippy::if_same_then_else)]
+    pub fn get_frame(&self, c: usize, z: usize, t: usize) -> Result<Frame, Error> {
         let bytes = if self.is_rgb()? && self.is_interleaved()? {
             let index = self.get_index(z as i32, 0, t as i32)?;
             self.deinterleave(self.open_bytes(index)?, c)?
@@ -382,7 +383,7 @@ impl Reader {
             let index = channel_separator.get_index(z as i32, c as i32, t as i32)?;
             channel_separator.open_bytes(index)?
         } else if self.is_indexed()? {
-            let index = self.get_index(z as i32, 0, t as i32)?;
+            let index = self.get_index(z as i32, c as i32, t as i32)?;
             self.open_bytes(index)?
             // TODO: apply LUT
             // let _bytes_lut = match self.pixel_type {
@@ -401,7 +402,7 @@ impl Reader {
         self.bytes_to_frame(bytes)
     }
 
-    fn bytes_to_frame(&self, bytes: Vec<u8>) -> Result<Frame> {
+    fn bytes_to_frame(&self, bytes: Vec<u8>) -> Result<Frame, Error> {
         macro_rules! get_frame {
             ($t:tt, <$n:expr) => {
                 Ok(Frame::from(Array2::from_shape_vec(

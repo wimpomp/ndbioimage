@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_auto_cfg))]
+
 mod bioformats;
 
 pub mod axes;
@@ -9,6 +11,7 @@ pub mod stats;
 pub mod view;
 
 pub mod colors;
+pub mod error;
 #[cfg(feature = "movie")]
 pub mod movie;
 #[cfg(feature = "tiff")]
@@ -19,15 +22,15 @@ pub use bioformats::download_bioformats;
 #[cfg(test)]
 mod tests {
     use crate::axes::Axis;
+    use crate::error::Error;
     use crate::reader::{Frame, Reader};
     use crate::stats::MinMax;
     use crate::view::Item;
-    use anyhow::Result;
     use ndarray::{Array, Array4, Array5, NewAxis};
     use ndarray::{Array2, s};
     use rayon::prelude::*;
 
-    fn open(file: &str) -> Result<Reader> {
+    fn open(file: &str) -> Result<Reader, Error> {
         let path = std::env::current_dir()?
             .join("tests")
             .join("files")
@@ -35,7 +38,7 @@ mod tests {
         Reader::new(&path, 0)
     }
 
-    fn get_pixel_type(file: &str) -> Result<String> {
+    fn get_pixel_type(file: &str) -> Result<String, Error> {
         let reader = open(file)?;
         Ok(format!(
             "file: {}, pixel type: {:?}",
@@ -43,13 +46,13 @@ mod tests {
         ))
     }
 
-    fn get_frame(file: &str) -> Result<Frame> {
+    fn get_frame(file: &str) -> Result<Frame, Error> {
         let reader = open(file)?;
         reader.get_frame(0, 0, 0)
     }
 
     #[test]
-    fn read_ser() -> Result<()> {
+    fn read_ser() -> Result<(), Error> {
         let file = "Experiment-2029.czi";
         let reader = open(file)?;
         println!("size: {}, {}", reader.size_y, reader.size_y);
@@ -63,7 +66,7 @@ mod tests {
     }
 
     #[test]
-    fn read_par() -> Result<()> {
+    fn read_par() -> Result<(), Error> {
         let files = vec!["Experiment-2029.czi", "test.tif"];
         let pixel_type = files
             .into_par_iter()
@@ -74,7 +77,7 @@ mod tests {
     }
 
     #[test]
-    fn read_frame_par() -> Result<()> {
+    fn read_frame_par() -> Result<(), Error> {
         let files = vec!["Experiment-2029.czi", "test.tif"];
         let frames = files
             .into_par_iter()
@@ -85,7 +88,7 @@ mod tests {
     }
 
     #[test]
-    fn read_sequence() -> Result<()> {
+    fn read_sequence() -> Result<(), Error> {
         let file = "YTL1841B2-2-1_1hr_DMSO_galinduction_1/Pos0/img_000000000_mScarlet_GFP-mSc-filter_004.tif";
         let reader = open(file)?;
         println!("reader: {:?}", reader);
@@ -97,7 +100,7 @@ mod tests {
     }
 
     #[test]
-    fn read_sequence1() -> Result<()> {
+    fn read_sequence1() -> Result<(), Error> {
         let file = "4-Pos_001_002/img_000000000_Cy3-Cy3_filter_000.tif";
         let reader = open(file)?;
         println!("reader: {:?}", reader);
@@ -105,7 +108,7 @@ mod tests {
     }
 
     #[test]
-    fn ome_xml() -> Result<()> {
+    fn ome_xml() -> Result<(), Error> {
         let file = "Experiment-2029.czi";
         let reader = open(file)?;
         let xml = reader.get_ome_xml()?;
@@ -114,7 +117,7 @@ mod tests {
     }
 
     #[test]
-    fn view() -> Result<()> {
+    fn view() -> Result<(), Error> {
         let file = "YTL1841B2-2-1_1hr_DMSO_galinduction_1/Pos0/img_000000000_mScarlet_GFP-mSc-filter_004.tif";
         let reader = open(file)?;
         let view = reader.view();
@@ -127,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn view_shape() -> Result<()> {
+    fn view_shape() -> Result<(), Error> {
         let file = "YTL1841B2-2-1_1hr_DMSO_galinduction_1/Pos0/img_000000000_mScarlet_GFP-mSc-filter_004.tif";
         let reader = open(file)?;
         let view = reader.view();
@@ -138,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn view_new_axis() -> Result<()> {
+    fn view_new_axis() -> Result<(), Error> {
         let file = "YTL1841B2-2-1_1hr_DMSO_galinduction_1/Pos0/img_000000000_mScarlet_GFP-mSc-filter_004.tif";
         let reader = open(file)?;
         let view = reader.view();
@@ -153,7 +156,7 @@ mod tests {
     }
 
     #[test]
-    fn view_permute_axes() -> Result<()> {
+    fn view_permute_axes() -> Result<(), Error> {
         let file = "YTL1841B2-2-1_1hr_DMSO_galinduction_1/Pos0/img_000000000_mScarlet_GFP-mSc-filter_004.tif";
         let reader = open(file)?;
         let view = reader.view();
@@ -180,7 +183,7 @@ mod tests {
         ($($name:ident: $b:expr $(,)?)*) => {
             $(
                 #[test]
-                fn $name() -> Result<()> {
+                fn $name() -> Result<(), Error> {
                     let file = "YTL1841B2-2-1_1hr_DMSO_galinduction_1/Pos0/img_000000000_mScarlet_GFP-mSc-filter_004.tif";
                     let reader = open(file)?;
                     let view = reader.view();
@@ -208,7 +211,7 @@ mod tests {
         ($($name:ident: $b:expr $(,)?)*) => {
             $(
                 #[test]
-                fn $name() -> Result<()> {
+                fn $name() -> Result<(), Error> {
                     let file = "YTL1841B2-2-1_1hr_DMSO_galinduction_1/Pos0/img_000000000_mScarlet_GFP-mSc-filter_004.tif";
                     let reader = open(file)?;
                     let view = reader.view();
@@ -254,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    fn dyn_view() -> Result<()> {
+    fn dyn_view() -> Result<(), Error> {
         let file = "YTL1841B2-2-1_1hr_DMSO_galinduction_1/Pos0/img_000000000_mScarlet_GFP-mSc-filter_004.tif";
         let reader = open(file)?;
         let a = reader.view().into_dyn();
@@ -266,7 +269,7 @@ mod tests {
     }
 
     #[test]
-    fn item() -> Result<()> {
+    fn item() -> Result<(), Error> {
         let file = "1xp53-01-AP1.czi";
         let reader = open(file)?;
         let view = reader.view();
@@ -278,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn slice_cztyx() -> Result<()> {
+    fn slice_cztyx() -> Result<(), Error> {
         let file = "1xp53-01-AP1.czi";
         let reader = open(file)?;
         let view = reader.view().max_proj(Axis::Z)?.into_dyn();
@@ -295,7 +298,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_axes() -> Result<()> {
+    fn reset_axes() -> Result<(), Error> {
         let file = "1xp53-01-AP1.czi";
         let reader = open(file)?;
         let view = reader.view().max_proj(Axis::Z)?;
@@ -307,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_axes2() -> Result<()> {
+    fn reset_axes2() -> Result<(), Error> {
         let file = "Experiment-2029.czi";
         let reader = open(file)?;
         let view = reader.view().squeeze()?;
@@ -317,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_axes3() -> Result<()> {
+    fn reset_axes3() -> Result<(), Error> {
         let file = "Experiment-2029.czi";
         let reader = open(file)?;
         let view4 = reader.view().squeeze()?;
@@ -345,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn max() -> Result<()> {
+    fn max() -> Result<(), Error> {
         let file = "Experiment-2029.czi";
         let reader = open(file)?;
         let view = reader.view();

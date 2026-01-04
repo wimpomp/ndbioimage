@@ -45,6 +45,10 @@ if not list((Path(__file__).parent / "jassets").glob("bioformats*.jar")):
     rs.download_bioformats(True)
 
 
+class ReaderNotFoundError(Exception):
+    pass
+
+
 class TransformTiff(IJTiffParallel):
     """transform frames in a parallel process to speed up saving"""
 

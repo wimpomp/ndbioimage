@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use crate::error::Error;
 use itertools::Itertools;
 use ome_metadata::Ome;
 use ome_metadata::ome::{
@@ -67,7 +67,7 @@ pub trait Metadata {
     }
 
     /// shape of the data along cztyx axes
-    fn shape(&self) -> Result<(usize, usize, usize, usize, usize)> {
+    fn shape(&self) -> Result<(usize, usize, usize, usize, usize), Error> {
         if let Some(pixels) = self.get_pixels() {
             Ok((
                 pixels.size_c as usize,
@@ -77,12 +77,12 @@ pub trait Metadata {
                 pixels.size_x as usize,
             ))
         } else {
-            Err(anyhow!("No image or pixels found"))
+            Err(Error::NoImageOrPixels)
         }
     }
 
     /// pixel size in nm
-    fn pixel_size(&self) -> Result<Option<f64>> {
+    fn pixel_size(&self) -> Result<Option<f64>, Error> {
         if let Some(pixels) = self.get_pixels() {
             match (pixels.physical_size_x, pixels.physical_size_y) {
                 (Some(x), Some(y)) => Ok(Some(
@@ -114,7 +114,7 @@ pub trait Metadata {
     }
 
     /// distance between planes in z-stack in nm
-    fn delta_z(&self) -> Result<Option<f64>> {
+    fn delta_z(&self) -> Result<Option<f64>, Error> {
         if let Some(pixels) = self.get_pixels() {
             if let Some(z) = pixels.physical_size_z {
                 return Ok(Some(
@@ -128,7 +128,7 @@ pub trait Metadata {
     }
 
     /// time interval in seconds for time-lapse images
-    fn time_interval(&self) -> Result<Option<f64>> {
+    fn time_interval(&self) -> Result<Option<f64>, Error> {
         if let Some(pixels) = self.get_pixels() {
             if let Some(plane) = &pixels.plane {
                 if let Some(t) = plane.iter().map(|p| p.the_t).max() {
@@ -157,7 +157,7 @@ pub trait Metadata {
     }
 
     /// exposure time for channel, z=0 and t=0
-    fn exposure_time(&self, channel: usize) -> Result<Option<f64>> {
+    fn exposure_time(&self, channel: usize) -> Result<Option<f64>, Error> {
         let c = channel as i32;
         if let Some(pixels) = self.get_pixels() {
             if let Some(plane) = &pixels.plane {
@@ -192,7 +192,7 @@ pub trait Metadata {
         }
     }
 
-    fn laser_wavelengths(&self, channel: usize) -> Result<Option<f64>> {
+    fn laser_wavelengths(&self, channel: usize) -> Result<Option<f64>, Error> {
         if let Some(pixels) = self.get_pixels() {
             if let Some(channel) = pixels.channel.get(channel) {
                 if let Some(w) = channel.excitation_wavelength {
@@ -207,7 +207,7 @@ pub trait Metadata {
         Ok(None)
     }
 
-    fn laser_powers(&self, channel: usize) -> Result<Option<f64>> {
+    fn laser_powers(&self, channel: usize) -> Result<Option<f64>, Error> {
         if let Some(pixels) = self.get_pixels() {
             if let Some(channel) = pixels.channel.get(channel) {
                 if let Some(ls) = &channel.light_source_settings {
@@ -215,7 +215,7 @@ pub trait Metadata {
                         return if (0. ..=1.).contains(&a) {
                             Ok(Some(1f64 - (a as f64)))
                         } else {
-                            Err(anyhow!("Invalid attenuation value"))
+                            Err(Error::InvalidAttenuation(a.to_string()))
                         };
                     }
                 }
@@ -273,7 +273,7 @@ pub trait Metadata {
         }
     }
 
-    fn summary(&self) -> Result<String> {
+    fn summary(&self) -> Result<String, Error> {
         let size_c = if let Some(pixels) = self.get_pixels() {
             pixels.channel.len()
         } else {
@@ -291,7 +291,7 @@ pub trait Metadata {
         }
         let exposure_time = (0..size_c)
             .map(|c| self.exposure_time(c))
-            .collect::<Result<Vec<_>>>()?
+            .collect::<Result<Vec<_>, Error>>()?
             .into_iter()
             .flatten()
             .collect::<Vec<_>>();
@@ -333,7 +333,7 @@ pub trait Metadata {
         }
         let laser_wavelengths = (0..size_c)
             .map(|c| self.laser_wavelengths(c))
-            .collect::<Result<Vec<_>>>()?
+            .collect::<Result<Vec<_>, Error>>()?
             .into_iter()
             .flatten()
             .collect::<Vec<_>>();
@@ -345,7 +345,7 @@ pub trait Metadata {
         }
         let laser_powers = (0..size_c)
             .map(|c| self.laser_powers(c))
-            .collect::<Result<Vec<_>>>()?
+            .collect::<Result<Vec<_>, Error>>()?
             .into_iter()
             .flatten()
             .collect::<Vec<_>>();

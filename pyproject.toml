@@ -50,6 +50,7 @@ python-source = "py"
 features = ["pyo3/extension-module", "python", "gpl-formats"]
 module-name = "ndbioimage.ndbioimage_rs"
 exclude = ["py/ndbioimage/jassets/*", "py/ndbioimage/deps/*"]
+strip = true
 
 [tool.isort]
 line_length = 119

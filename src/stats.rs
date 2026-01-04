@@ -1,14 +1,14 @@
-use anyhow::{Result, anyhow};
+use crate::error::Error;
 use ndarray::{Array, ArrayD, ArrayView, Axis, Dimension, RemoveAxis};
 
 /// a trait to define the min, max, sum and mean operations along an axis
 pub trait MinMax {
     type Output;
 
-    fn max(self, axis: usize) -> Result<Self::Output>;
-    fn min(self, axis: usize) -> Result<Self::Output>;
-    fn sum(self, axis: usize) -> Result<Self::Output>;
-    fn mean(self, axis: usize) -> Result<Self::Output>;
+    fn max(self, axis: usize) -> Result<Self::Output, Error>;
+    fn min(self, axis: usize) -> Result<Self::Output, Error>;
+    fn sum(self, axis: usize) -> Result<Self::Output, Error>;
+    fn mean(self, axis: usize) -> Result<Self::Output, Error>;
 }
 
 macro_rules! impl_frame_stats_float_view {
@@ -20,7 +20,7 @@ macro_rules! impl_frame_stats_float_view {
             {
                 type Output = Array<$t, D::Smaller>;
 
-                fn max(self, axis: usize) -> Result<Self::Output> {
+                fn max(self, axis: usize) -> Result<Self::Output, Error> {
                     let a: Vec<_> = self
                         .lanes(Axis(axis))
                         .into_iter()
@@ -34,7 +34,7 @@ macro_rules! impl_frame_stats_float_view {
                     Ok(ArrayD::from_shape_vec(shape, a)?.into_dimensionality()?)
                 }
 
-                fn min(self, axis: usize) -> Result<Self::Output> {
+                fn min(self, axis: usize) -> Result<Self::Output, Error> {
                     let a: Vec<_> = self
                         .lanes(Axis(axis))
                         .into_iter()
@@ -48,12 +48,12 @@ macro_rules! impl_frame_stats_float_view {
                     Ok(ArrayD::from_shape_vec(shape, a)?.into_dimensionality()?)
                 }
 
-                fn sum(self, axis: usize) -> Result<Self::Output> {
+                fn sum(self, axis: usize) -> Result<Self::Output, Error> {
                     Ok(self.sum_axis(Axis(axis)))
                 }
 
-                fn mean(self, axis: usize) -> Result<Self::Output> {
-                    self.mean_axis(Axis(axis)).ok_or_else(|| anyhow!("no mean"))
+                fn mean(self, axis: usize) -> Result<Self::Output, Error> {
+                    self.mean_axis(Axis(axis)).ok_or(Error::NoMean)
                 }
             }
         )*
@@ -69,7 +69,7 @@ macro_rules! impl_frame_stats_int_view {
             {
                 type Output = Array<$t, D::Smaller>;
 
-                fn max(self, axis: usize) -> Result<Self::Output> {
+                fn max(self, axis: usize) -> Result<Self::Output, Error> {
                     let a: Vec<_> = self
                         .lanes(Axis(axis))
                         .into_iter()
@@ -80,7 +80,7 @@ macro_rules! impl_frame_stats_int_view {
                     Ok(ArrayD::from_shape_vec(shape, a)?.into_dimensionality()?)
                 }
 
-                fn min(self, axis: usize) -> Result<Self::Output> {
+                fn min(self, axis: usize) -> Result<Self::Output, Error> {
                     let a: Vec<_> = self
                         .lanes(Axis(axis))
                         .into_iter()
@@ -91,12 +91,12 @@ macro_rules! impl_frame_stats_int_view {
                     Ok(ArrayD::from_shape_vec(shape, a)?.into_dimensionality()?)
                 }
 
-                fn sum(self, axis: usize) -> Result<Self::Output> {
+                fn sum(self, axis: usize) -> Result<Self::Output, Error> {
                     Ok(self.sum_axis(Axis(axis)))
                 }
 
-                fn mean(self, axis: usize) -> Result<Self::Output> {
-                    self.mean_axis(Axis(axis)).ok_or_else(|| anyhow!("no mean"))
+                fn mean(self, axis: usize) -> Result<Self::Output, Error> {
+                    self.mean_axis(Axis(axis)).ok_or(Error::NoMean)
                 }
             }
         )*
@@ -112,7 +112,7 @@ macro_rules! impl_frame_stats_float {
             {
                 type Output = Array<$t, D::Smaller>;
 
-                fn max(self, axis: usize) -> Result<Self::Output> {
+                fn max(self, axis: usize) -> Result<Self::Output, Error> {
                     let a: Vec<_> = self
                         .lanes(Axis(axis))
                         .into_iter()
@@ -126,7 +126,7 @@ macro_rules! impl_frame_stats_float {
                     Ok(ArrayD::from_shape_vec(shape, a)?.into_dimensionality()?)
                 }
 
-                fn min(self, axis: usize) -> Result<Self::Output> {
+                fn min(self, axis: usize) -> Result<Self::Output, Error> {
                     let a: Vec<_> = self
                         .lanes(Axis(axis))
                         .into_iter()
@@ -140,12 +140,12 @@ macro_rules! impl_frame_stats_float {
                     Ok(ArrayD::from_shape_vec(shape, a)?.into_dimensionality()?)
                 }
 
-                fn sum(self, axis: usize) -> Result<Self::Output> {
+                fn sum(self, axis: usize) -> Result<Self::Output, Error> {
                     Ok(self.sum_axis(Axis(axis)))
                 }
 
-                fn mean(self, axis: usize) -> Result<Self::Output> {
-                    self.mean_axis(Axis(axis)).ok_or_else(|| anyhow!("no mean"))
+                fn mean(self, axis: usize) -> Result<Self::Output, Error> {
+                    self.mean_axis(Axis(axis)).ok_or(Error::NoMean)
                 }
             }
         )*
@@ -161,7 +161,7 @@ macro_rules! impl_frame_stats_int {
             {
                 type Output = Array<$t, D::Smaller>;
 
-                fn max(self, axis: usize) -> Result<Self::Output> {
+                fn max(self, axis: usize) -> Result<Self::Output, Error> {
                     let a: Vec<_> = self
                         .lanes(Axis(axis))
                         .into_iter()
@@ -172,7 +172,7 @@ macro_rules! impl_frame_stats_int {
                     Ok(ArrayD::from_shape_vec(shape, a)?.into_dimensionality()?)
                 }
 
-                fn min(self, axis: usize) -> Result<Self::Output> {
+                fn min(self, axis: usize) -> Result<Self::Output, Error> {
                     let a: Vec<_> = self
                         .lanes(Axis(axis))
                         .into_iter()
@@ -183,12 +183,12 @@ macro_rules! impl_frame_stats_int {
                     Ok(ArrayD::from_shape_vec(shape, a)?.into_dimensionality()?)
                 }
 
-                fn sum(self, axis: usize) -> Result<Self::Output> {
+                fn sum(self, axis: usize) -> Result<Self::Output, Error> {
                     Ok(self.sum_axis(Axis(axis)))
                 }
 
-                fn mean(self, axis: usize) -> Result<Self::Output> {
-                    self.mean_axis(Axis(axis)).ok_or_else(|| anyhow!("no mean"))
+                fn mean(self, axis: usize) -> Result<Self::Output, Error> {
+                    self.mean_axis(Axis(axis)).ok_or(Error::NoMean)
                 }
             }
         )*

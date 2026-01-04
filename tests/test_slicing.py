@@ -37,5 +37,5 @@ def test_slicing(s, image, array):
         assert s_im == s_a
     else:
         assert isinstance(s_im, Imread)
-        assert s_im.shape == s_a.shape
+        assert tuple(s_im.shape) == s_a.shape
         assert np.all(s_im == s_a)

@@ -1,4 +1,4 @@
-use anyhow::{Error, Result};
+use crate::error::Error;
 use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -177,12 +177,12 @@ pub struct Color {
 impl FromStr for Color {
     type Err = Error;
 
-    fn from_str(s: &str) -> Result<Self> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s = if !s.starts_with("#") {
             if let Some(s) = COLORS.get(s) {
                 s
             } else {
-                return Err(Error::msg(format!("invalid color: {}", s)));
+                return Err(Error::InvalidColor(s.to_string()));
             }
         } else {
             s

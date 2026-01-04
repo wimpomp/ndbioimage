@@ -1,8 +1,16 @@
 #[cfg(not(feature = "python"))]
 use j4rs::{JvmBuilder, MavenArtifact, MavenArtifactRepo, MavenSettings, errors::J4RsError};
-
 #[cfg(not(feature = "python"))]
 use retry::{delay, delay::Exponential, retry};
+use std::error::Error;
+#[cfg(not(feature = "python"))]
+use std::fmt::Display;
+#[cfg(not(feature = "python"))]
+use std::fmt::Formatter;
+#[cfg(not(feature = "python"))]
+use std::path::PathBuf;
+#[cfg(not(feature = "python"))]
+use std::{env, fs};
 
 #[cfg(feature = "python")]
 use j4rs::Jvm;
@@ -10,7 +18,23 @@ use j4rs::Jvm;
 #[cfg(feature = "movie")]
 use ffmpeg_sidecar::download::auto_download;
 
-fn main() -> anyhow::Result<()> {
+#[cfg(not(feature = "python"))]
+#[derive(Clone, Debug)]
+enum BuildError {
+    BioFormatsNotDownloaded,
+}
+
+#[cfg(not(feature = "python"))]
+impl Display for BuildError {
+    fn fmt(&self, fmt: &mut Formatter) -> Result<(), std::fmt::Error> {
+        write!(fmt, "Bioformats package not downloaded")
+    }
+}
+
+#[cfg(not(feature = "python"))]
+impl Error for BuildError {}
+
+fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo::rerun-if-changed=build.rs");
 
     if std::env::var("DOCS_RS").is_err() {
@@ -18,10 +42,16 @@ fn main() -> anyhow::Result<()> {
         auto_download()?;
 
         #[cfg(not(feature = "python"))]
-        retry(
-            Exponential::from_millis(1000).map(delay::jitter).take(4),
-            deploy_java_artifacts,
-        )?;
+        {
+            retry(
+                Exponential::from_millis(1000).map(delay::jitter).take(4),
+                deploy_java_artifacts,
+            )?;
+            let path = default_jassets_path()?;
+            if !path.join("bioformats_package-8.3.0.jar").exists() {
+                Err(BuildError::BioFormatsNotDownloaded)?;
+            }
+        }
 
         #[cfg(feature = "python")]
         {
@@ -56,6 +86,31 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(not(feature = "python"))]
+fn default_jassets_path() -> Result<PathBuf, J4RsError> {
+    let is_build_script = env::var("OUT_DIR").is_ok();
+
+    let mut start_path = if is_build_script {
+        PathBuf::from(env::var("OUT_DIR")?)
+    } else {
+        env::current_exe()?
+    };
+    start_path = fs::canonicalize(start_path)?;
+
+    while start_path.pop() {
+        for entry in std::fs::read_dir(&start_path)? {
+            let path = entry?.path();
+            if path.file_name().map(|x| x == "jassets").unwrap_or(false) {
+                return Ok(path);
+            }
+        }
+    }
+
+    Err(J4RsError::GeneralError(
+        "Can not find jassets directory".to_owned(),
+    ))
 }
 
 #[cfg(not(feature = "python"))]

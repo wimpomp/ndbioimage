@@ -102,6 +102,3 @@ let array = view.as_array::<u16>()?
 ```ndbioimage image```: show metadata about image  
 ```ndbioimage image -w {name}.tif -r```: copy image into image.tif (replacing {name} with image), while registering channels  
 ```ndbioimage image -w image.mp4 -C cyan lime red``` copy image into image.mp4 (z will be max projected), make channel colors cyan lime and red
-
-# TODO
-- more image formats

@@ -1,7 +1,8 @@
 use crate::axes::Axis;
 use crate::colors::Color;
+use crate::error::Error;
+use crate::reader::PixelType;
 use crate::view::View;
-use anyhow::{Result, anyhow};
 use ffmpeg_sidecar::command::FfmpegCommand;
 use ffmpeg_sidecar::download::auto_download;
 use ffmpeg_sidecar::event::{FfmpegEvent, LogLevel};
@@ -18,6 +19,8 @@ pub struct MovieOptions {
     scale: f64,
     colors: Option<Vec<Vec<u8>>>,
     overwrite: bool,
+    register: bool,
+    no_scaling: bool,
 }
 
 impl Default for MovieOptions {
@@ -28,6 +31,8 @@ impl Default for MovieOptions {
             scale: 1.0,
             colors: None,
             overwrite: false,
+            register: false,
+            no_scaling: false,
         }
     }
 }
@@ -39,14 +44,16 @@ impl MovieOptions {
         scale: f64,
         colors: Vec<String>,
         overwrite: bool,
-    ) -> Result<Self> {
+        register: bool,
+        no_scaling: bool,
+    ) -> Result<Self, Error> {
         let colors = if colors.is_empty() {
             None
         } else {
             let colors = colors
                 .iter()
                 .map(|c| c.parse::<Color>())
-                .collect::<Result<Vec<_>>>()?;
+                .collect::<Result<Vec<_>, Error>>()?;
             Some(colors.into_iter().map(|c| c.to_rgb()).collect())
         };
         Ok(Self {
@@ -55,6 +62,8 @@ impl MovieOptions {
             scale,
             colors,
             overwrite,
+            register,
+            no_scaling,
         })
     }
 
@@ -70,11 +79,11 @@ impl MovieOptions {
         self.scale = scale;
     }
 
-    pub fn set_colors(&mut self, colors: &[String]) -> Result<()> {
+    pub fn set_colors(&mut self, colors: &[String]) -> Result<(), Error> {
         let colors = colors
             .iter()
             .map(|c| c.parse::<Color>())
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>, Error>>()?;
         self.colors = Some(colors.into_iter().map(|c| c.to_rgb()).collect());
         Ok(())
     }
@@ -84,7 +93,7 @@ impl MovieOptions {
     }
 }
 
-fn get_ab(tyx: View<IxDyn>) -> Result<(f64, f64)> {
+fn get_ab(tyx: View<IxDyn>) -> Result<(f64, f64), Error> {
     let s = tyx
         .as_array::<f64>()?
         .iter()
@@ -107,14 +116,14 @@ fn get_ab(tyx: View<IxDyn>) -> Result<(f64, f64)> {
         b = s[n - 1];
     }
     if a == b {
-        a = 1.0;
+        a = 0.0;
         b = 1.0;
     }
     Ok((a, b))
 }
 
 fn cframe(frame: Array2<f64>, color: &[u8], a: f64, b: f64) -> Array3<f64> {
-    let frame = (frame - a) / (b - a);
+    let frame = ((frame - a) / (b - a)).clamp(0.0, 1.0);
     let color = color
         .iter()
         .map(|&c| (c as f64) / 255.0)
@@ -124,23 +133,26 @@ fn cframe(frame: Array2<f64>, color: &[u8], a: f64, b: f64) -> Array3<f64> {
         .map(|&c| (c * &frame).to_owned())
         .collect::<Vec<Array2<f64>>>();
     let view = frame.iter().map(|c| c.view()).collect::<Vec<_>>();
-    stack(ndarray::Axis(0), &view).unwrap()
+    stack(ndarray::Axis(2), &view).unwrap()
 }
 
 impl<D> View<D>
 where
     D: Dimension,
 {
-    pub fn save_as_movie<P>(&self, path: P, options: &MovieOptions) -> Result<()>
+    pub fn save_as_movie<P>(&self, path: P, options: &MovieOptions) -> Result<(), Error>
     where
         P: AsRef<Path>,
     {
+        if options.register {
+            return Err(Error::NotImplemented("register".to_string()));
+        }
         let path = path.as_ref().to_path_buf();
         if path.exists() {
             if options.overwrite {
                 std::fs::remove_file(&path)?;
             } else {
-                return Err(anyhow!("File {} already exists", path.display()));
+                return Err(Error::FileAlreadyExists(path.display().to_string()));
             }
         }
         let view = self.max_proj(Axis::Z)?.reset_axes()?;
@@ -150,10 +162,10 @@ where
         let shape = view.shape();
         let size_c = shape[0];
         let size_t = shape[2];
-        let size_x = shape[3];
-        let size_y = shape[4];
-        let shape_x = 2 * (((size_x as f64 * scale) / 2.).round() as usize);
+        let size_y = shape[3];
+        let size_x = shape[4];
         let shape_y = 2 * (((size_y as f64 * scale) / 2.).round() as usize);
+        let shape_x = 2 * (((size_x as f64 * scale) / 2.).round() as usize);
 
         while brightness.len() < size_c {
             brightness.push(1.0);
@@ -167,15 +179,18 @@ where
             colors.push(vec![255, 255, 255]);
         }
 
-        auto_download()?;
+        if let Err(e) = auto_download() {
+            return Err(Error::Ffmpeg(e.to_string()));
+        }
+
         let mut movie = FfmpegCommand::new()
             .args([
                 "-f",
                 "rawvideo",
                 "-pix_fmt",
-                "gray",
+                "rgb24",
                 "-s",
-                &format!("{}x{}", size_x, size_y),
+                &format!("{size_x}x{size_y}"),
             ])
             .input("-")
             .args([
@@ -194,16 +209,33 @@ where
             .spawn()?;
         let mut stdin = movie.take_stdin().unwrap();
 
-        let ab = (0..size_c)
-            .map(|c| match view.slice(s![c, .., .., .., ..]) {
-                Ok(slice) => get_ab(slice.into_dyn()),
-                Err(e) => Err(e),
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let ab = if options.no_scaling {
+            vec![
+                match view.pixel_type {
+                    PixelType::I8 => (i8::MIN as f64, i8::MAX as f64),
+                    PixelType::U8 => (u8::MIN as f64, u8::MAX as f64),
+                    PixelType::I16 => (i16::MIN as f64, i16::MAX as f64),
+                    PixelType::U16 => (u16::MIN as f64, u16::MAX as f64),
+                    PixelType::I32 => (i32::MIN as f64, i32::MAX as f64),
+                    PixelType::U32 => (u32::MIN as f64, u32::MAX as f64),
+                    PixelType::I64 => (i64::MIN as f64, i64::MAX as f64),
+                    PixelType::U64 => (u64::MIN as f64, u64::MAX as f64),
+                    _ => (0.0, 1.0),
+                };
+                view.size_c
+            ]
+        } else {
+            (0..size_c)
+                .map(|c| match view.slice(s![c, .., .., .., ..]) {
+                    Ok(slice) => get_ab(slice.into_dyn()),
+                    Err(e) => Err(e),
+                })
+                .collect::<Result<Vec<_>, Error>>()?
+        };
 
         thread::spawn(move || {
             for t in 0..size_t {
-                let mut frame = Array3::<f64>::zeros((3, size_y, size_y));
+                let mut frame = Array3::<f64>::zeros((size_y, size_x, 3));
                 for c in 0..size_c {
                     frame = frame
                         + cframe(
@@ -213,25 +245,20 @@ where
                             ab[c].1 / brightness[c],
                         );
                 }
-                let frame = frame.mapv(|i| {
-                    if i < 0.0 {
-                        0
-                    } else if i > 1.0 {
-                        1
-                    } else {
-                        (255.0 * i).round() as u8
-                    }
-                });
+                let frame = (frame.clamp(0.0, 1.0) * 255.0).round().mapv(|i| i as u8);
                 let bytes: Vec<_> = frame.flatten().into_iter().collect();
                 stdin.write_all(&bytes).unwrap();
             }
         });
 
-        movie.iter()?.for_each(|e| match e {
-            FfmpegEvent::Log(LogLevel::Error, e) => println!("Error: {}", e),
-            FfmpegEvent::Progress(p) => println!("Progress: {} / 00:00:15", p.time),
-            _ => {}
-        });
+        movie
+            .iter()
+            .map_err(|e| Error::Ffmpeg(e.to_string()))?
+            .for_each(|e| match e {
+                FfmpegEvent::Log(LogLevel::Error, e) => println!("Error: {}", e),
+                FfmpegEvent::Progress(p) => println!("Progress: {} / 00:00:15", p.time),
+                _ => {}
+            });
         Ok(())
     }
 }
@@ -242,7 +269,7 @@ mod tests {
     use crate::reader::Reader;
 
     #[test]
-    fn movie() -> Result<()> {
+    fn movie() -> Result<(), Error> {
         let file = "1xp53-01-AP1.czi";
         let path = std::env::current_dir()?
             .join("tests")

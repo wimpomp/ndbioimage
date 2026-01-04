@@ -1,5 +1,5 @@
+use crate::error::Error;
 use crate::stats::MinMax;
-use anyhow::{Error, Result, anyhow};
 use ndarray::{Array, Dimension, Ix2, SliceInfo, SliceInfoElem};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{DeserializeAs, SerializeAs};
@@ -13,10 +13,15 @@ pub trait Ax {
     fn n(&self) -> usize;
 
     /// the indices of axes in self.axes, which always has all of CZTYX
-    fn pos(&self, axes: &[Axis], slice: &[SliceInfoElem]) -> Result<usize>;
+    fn pos(&self, axes: &[Axis], slice: &[SliceInfoElem]) -> Result<usize, Error>;
 
     /// the indices of axes in self.axes, which always has all of CZTYX, but skip axes with an operation
-    fn pos_op(&self, axes: &[Axis], slice: &[SliceInfoElem], op_axes: &[Axis]) -> Result<usize>;
+    fn pos_op(
+        &self,
+        axes: &[Axis],
+        slice: &[SliceInfoElem],
+        op_axes: &[Axis],
+    ) -> Result<usize, Error>;
 }
 
 /// Enum for CZTYX axes or a new axis
@@ -39,7 +44,7 @@ impl Hash for Axis {
 impl FromStr for Axis {
     type Err = Error;
 
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_uppercase().as_str() {
             "C" => Ok(Axis::C),
             "Z" => Ok(Axis::Z),
@@ -47,7 +52,7 @@ impl FromStr for Axis {
             "Y" => Ok(Axis::Y),
             "X" => Ok(Axis::X),
             "NEW" => Ok(Axis::New),
-            _ => Err(anyhow!("invalid axis: {}", s)),
+            _ => Err(Error::InvalidAxis(s.to_string())),
         }
     }
 }
@@ -71,18 +76,23 @@ impl Ax for Axis {
         *self as usize
     }
 
-    fn pos(&self, axes: &[Axis], _slice: &[SliceInfoElem]) -> Result<usize> {
+    fn pos(&self, axes: &[Axis], _slice: &[SliceInfoElem]) -> Result<usize, Error> {
         if let Some(pos) = axes.iter().position(|a| a == self) {
             Ok(pos)
         } else {
-            Err(Error::msg(format!(
-                "Axis {:?} not found in axes {:?}",
-                self, axes
-            )))
+            Err(Error::AxisNotFound(
+                format!("{:?}", self),
+                format!("{:?}", axes),
+            ))
         }
     }
 
-    fn pos_op(&self, axes: &[Axis], _slice: &[SliceInfoElem], _op_axes: &[Axis]) -> Result<usize> {
+    fn pos_op(
+        &self,
+        axes: &[Axis],
+        _slice: &[SliceInfoElem],
+        _op_axes: &[Axis],
+    ) -> Result<usize, Error> {
         self.pos(axes, _slice)
     }
 }
@@ -92,7 +102,7 @@ impl Ax for usize {
         *self
     }
 
-    fn pos(&self, _axes: &[Axis], slice: &[SliceInfoElem]) -> Result<usize> {
+    fn pos(&self, _axes: &[Axis], slice: &[SliceInfoElem]) -> Result<usize, Error> {
         let idx: Vec<_> = slice
             .iter()
             .enumerate()
@@ -101,7 +111,12 @@ impl Ax for usize {
         Ok(idx[*self])
     }
 
-    fn pos_op(&self, axes: &[Axis], slice: &[SliceInfoElem], op_axes: &[Axis]) -> Result<usize> {
+    fn pos_op(
+        &self,
+        axes: &[Axis],
+        slice: &[SliceInfoElem],
+        op_axes: &[Axis],
+    ) -> Result<usize, Error> {
         let idx: Vec<_> = axes
             .iter()
             .zip(slice.iter())
@@ -132,7 +147,7 @@ impl Operation {
         &self,
         array: Array<T, D>,
         axis: usize,
-    ) -> Result<<Array<T, D> as MinMax>::Output>
+    ) -> Result<<Array<T, D> as MinMax>::Output, Error>
     where
         D: Dimension,
         Array<T, D>: MinMax,
@@ -154,8 +169,11 @@ impl PartialEq for Axis {
 
 pub(crate) fn slice_info<D: Dimension>(
     info: &[SliceInfoElem],
-) -> Result<SliceInfo<&[SliceInfoElem], Ix2, D>> {
-    Ok(info.try_into()?)
+) -> Result<SliceInfo<&[SliceInfoElem], Ix2, D>, Error> {
+    match info.try_into() {
+        Ok(slice) => Ok(slice),
+        Err(err) => Err(Error::TryInto(err.to_string())),
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -171,10 +189,7 @@ pub(crate) enum SliceInfoElemDef {
 }
 
 impl SerializeAs<SliceInfoElem> for SliceInfoElemDef {
-    fn serialize_as<S>(
-        source: &SliceInfoElem,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error>
+    fn serialize_as<S>(source: &SliceInfoElem, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -183,7 +198,7 @@ impl SerializeAs<SliceInfoElem> for SliceInfoElemDef {
 }
 
 impl<'de> DeserializeAs<'de, SliceInfoElem> for SliceInfoElemDef {
-    fn deserialize_as<D>(deserializer: D) -> std::result::Result<SliceInfoElem, D::Error>
+    fn deserialize_as<D>(deserializer: D) -> Result<SliceInfoElem, D::Error>
     where
         D: Deserializer<'de>,
     {

@@ -1,8 +1,8 @@
 use crate::axes::{Ax, Axis, Operation, Slice, SliceInfoElemDef, slice_info};
+use crate::error::Error;
 use crate::metadata::Metadata;
 use crate::reader::Reader;
 use crate::stats::MinMax;
-use anyhow::{Error, Result, anyhow};
 use indexmap::IndexMap;
 use itertools::{Itertools, iproduct};
 use ndarray::{
@@ -22,27 +22,27 @@ use std::ops::{AddAssign, Deref, Div};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-fn idx_bnd(idx: isize, bnd: isize) -> Result<isize> {
+fn idx_bnd(idx: isize, bnd: isize) -> Result<isize, Error> {
     if idx < -bnd {
-        Err(anyhow!("Index {} out of bounds {}", idx, bnd))
+        Err(Error::OutOfBounds(idx, bnd))
     } else if idx < 0 {
         Ok(bnd - idx)
     } else if idx < bnd {
         Ok(idx)
     } else {
-        Err(anyhow!("Index {} out of bounds {}", idx, bnd))
+        Err(Error::OutOfBounds(idx, bnd))
     }
 }
 
-fn slc_bnd(idx: isize, bnd: isize) -> Result<isize> {
+fn slc_bnd(idx: isize, bnd: isize) -> Result<isize, Error> {
     if idx < -bnd {
-        Err(anyhow!("Index {} out of bounds {}", idx, bnd))
+        Err(Error::OutOfBounds(idx, bnd))
     } else if idx < 0 {
         Ok(bnd - idx)
     } else if idx <= bnd {
         Ok(idx)
     } else {
-        Err(anyhow!("Index {} out of bounds {}", idx, bnd))
+        Err(Error::OutOfBounds(idx, bnd))
     }
 }
 
@@ -88,7 +88,7 @@ impl<D: Dimension> View<D> {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn new_with_axes(reader: Arc<Reader>, axes: Vec<Axis>) -> Result<Self> {
+    pub(crate) fn new_with_axes(reader: Arc<Reader>, axes: Vec<Axis>) -> Result<Self, Error> {
         let mut slice = Vec::new();
         for axis in axes.iter() {
             match axis {
@@ -134,11 +134,7 @@ impl<D: Dimension> View<D> {
                     Axis::New => 1,
                 };
                 if size > 1 {
-                    return Err(anyhow!(
-                        "Axis {:?} has length {}, but was not included",
-                        axis,
-                        size
-                    ));
+                    return Err(Error::OutOfBoundsAxis(format!("{:?}", axis), size));
                 }
                 slice.push(SliceInfoElem::Index(0));
                 axes.push(axis);
@@ -180,7 +176,7 @@ impl<D: Dimension> View<D> {
     }
 
     /// change the dimension into a concrete dimension
-    pub fn into_dimensionality<D2: Dimension>(self) -> Result<View<D2>> {
+    pub fn into_dimensionality<D2: Dimension>(self) -> Result<View<D2>, Error> {
         if let Some(d) = D2::NDIM {
             if d == self.ndim() {
                 Ok(View {
@@ -191,7 +187,7 @@ impl<D: Dimension> View<D> {
                     dimensionality: PhantomData,
                 })
             } else {
-                Err(anyhow!("Dimensionality mismatch: {} != {}", d, self.ndim()))
+                Err(Error::DimensionalityMismatch(d, self.ndim()))
             }
         } else {
             Ok(View {
@@ -235,7 +231,7 @@ impl<D: Dimension> View<D> {
     }
 
     /// remove axes of size 1
-    pub fn squeeze(&self) -> Result<View<IxDyn>> {
+    pub fn squeeze(&self) -> Result<View<IxDyn>, Error> {
         let view = self.clone().into_dyn();
         let slice: Vec<_> = self
             .shape()
@@ -369,7 +365,7 @@ impl<D: Dimension> View<D> {
     }
 
     /// swap two axes
-    pub fn swap_axes<A: Ax>(&self, axis0: A, axis1: A) -> Result<Self> {
+    pub fn swap_axes<A: Ax>(&self, axis0: A, axis1: A) -> Result<Self, Error> {
         let idx0 = axis0.pos_op(&self.axes, &self.slice, &self.op_axes())?;
         let idx1 = axis1.pos_op(&self.axes, &self.slice, &self.op_axes())?;
         let mut slice = self.slice.to_vec();
@@ -380,7 +376,7 @@ impl<D: Dimension> View<D> {
     }
 
     /// subset of gives axes will be reordered in given order
-    pub fn permute_axes<A: Ax>(&self, axes: &[A]) -> Result<Self> {
+    pub fn permute_axes<A: Ax>(&self, axes: &[A]) -> Result<Self, Error> {
         let idx: Vec<usize> = axes
             .iter()
             .map(|a| a.pos_op(&self.axes, &self.slice, &self.op_axes()).unwrap())
@@ -397,7 +393,7 @@ impl<D: Dimension> View<D> {
     }
 
     /// reverse the order of the axes
-    pub fn transpose(&self) -> Result<Self> {
+    pub fn transpose(&self) -> Result<Self, Error> {
         Ok(View::new(
             self.reader.clone(),
             self.slice.iter().rev().cloned().collect(),
@@ -406,7 +402,7 @@ impl<D: Dimension> View<D> {
         .with_operations(self.operations.clone()))
     }
 
-    fn operate<A: Ax>(&self, axis: A, operation: Operation) -> Result<View<D::Smaller>> {
+    fn operate<A: Ax>(&self, axis: A, operation: Operation) -> Result<View<D::Smaller>, Error> {
         let pos = axis.pos_op(&self.axes, &self.slice, &self.op_axes())?;
         let ax = self.axes[pos];
         let (axes, slice, operations) = if Axis::New == ax {
@@ -423,7 +419,7 @@ impl<D: Dimension> View<D> {
                     self.operations.clone(),
                 )
             } else {
-                return Err(anyhow!("axis {}: {} is already operated on!", pos, ax));
+                return Err(Error::AxisAlreadyOperated(pos, ax.to_string()));
             }
         } else {
             let mut operations = self.operations.clone();
@@ -434,32 +430,32 @@ impl<D: Dimension> View<D> {
     }
 
     /// maximum along axis
-    pub fn max_proj<A: Ax>(&self, axis: A) -> Result<View<D::Smaller>> {
+    pub fn max_proj<A: Ax>(&self, axis: A) -> Result<View<D::Smaller>, Error> {
         self.operate(axis, Operation::Max)
     }
 
     /// minimum along axis
-    pub fn min_proj<A: Ax>(&self, axis: A) -> Result<View<D::Smaller>> {
+    pub fn min_proj<A: Ax>(&self, axis: A) -> Result<View<D::Smaller>, Error> {
         self.operate(axis, Operation::Min)
     }
 
     /// sum along axis
-    pub fn sum_proj<A: Ax>(&self, axis: A) -> Result<View<D::Smaller>> {
+    pub fn sum_proj<A: Ax>(&self, axis: A) -> Result<View<D::Smaller>, Error> {
         self.operate(axis, Operation::Sum)
     }
 
     /// mean along axis
-    pub fn mean_proj<A: Ax>(&self, axis: A) -> Result<View<D::Smaller>> {
+    pub fn mean_proj<A: Ax>(&self, axis: A) -> Result<View<D::Smaller>, Error> {
         self.operate(axis, Operation::Mean)
     }
 
     /// created a new sliced view
-    pub fn slice<I>(&self, info: I) -> Result<View<I::OutDim>>
+    pub fn slice<I>(&self, info: I) -> Result<View<I::OutDim>, Error>
     where
         I: SliceArg<D>,
     {
         if self.slice.out_ndim() < info.in_ndim() {
-            return Err(Error::msg("not enough free dimensions"));
+            return Err(Error::NotEnoughFreeDimensions);
         }
         let info = info.as_ref();
         let mut n_idx = 0;
@@ -495,11 +491,7 @@ impl<D: Dimension> View<D> {
                         };
                         let new_step = (step * info_step).abs();
                         if new_start > end {
-                            return Err(anyhow!(
-                                "Index {} out of bounds {}",
-                                info_start,
-                                (end - start) / step
-                            ));
+                            return Err(Error::OutOfBounds(*info_start, (end - start) / step));
                         }
                         new_slice.push(SliceInfoElem::Slice {
                             start: new_start,
@@ -521,11 +513,7 @@ impl<D: Dimension> View<D> {
                         };
                         let end = end.expect("slice has no end");
                         if i >= end {
-                            return Err(anyhow!(
-                                "Index {} out of bounds {}",
-                                i,
-                                (end - start) / step
-                            ));
+                            return Err(Error::OutOfBounds(i, (end - start) / step));
                         }
                         new_slice.push(SliceInfoElem::Index(i));
                         new_axes.push(*a.expect("axis should exist when slice exists"));
@@ -534,7 +522,7 @@ impl<D: Dimension> View<D> {
                     }
                     (Some(SliceInfoElem::Slice { start, .. }), Some(SliceInfoElem::NewAxis)) => {
                         if *start != 0 {
-                            return Err(anyhow!("Index {} out of bounds 1", start));
+                            return Err(Error::OutOfBounds(*start, 1));
                         }
                         new_slice.push(SliceInfoElem::NewAxis);
                         new_axes.push(Axis::New);
@@ -543,7 +531,7 @@ impl<D: Dimension> View<D> {
                     }
                     (Some(SliceInfoElem::Index(k)), Some(SliceInfoElem::NewAxis)) => {
                         if *k != 0 {
-                            return Err(anyhow!("Index {} out of bounds 1", k));
+                            return Err(Error::OutOfBounds(*k, 1));
                         }
                         n_idx += 1;
                         r_idx += 1;
@@ -587,7 +575,7 @@ impl<D: Dimension> View<D> {
 
     /// resets axes to cztyx order, with all 5 axes present,
     /// inserts new axes in place of axes under operation (max_proj etc.)
-    pub fn reset_axes(&self) -> Result<View<Ix5>> {
+    pub fn reset_axes(&self) -> Result<View<Ix5>, Error> {
         let mut axes = Vec::new();
         let mut slice = Vec::new();
 
@@ -615,7 +603,7 @@ impl<D: Dimension> View<D> {
 
     /// slice, but slice elements are in cztyx order, all cztyx must be given,
     /// but axes not present in view will be ignored, view axes are reordered in cztyx order
-    pub fn slice_cztyx<I>(&self, info: I) -> Result<View<I::OutDim>>
+    pub fn slice_cztyx<I>(&self, info: I) -> Result<View<I::OutDim>, Error>
     where
         I: SliceArg<Ix5>,
     {
@@ -623,7 +611,7 @@ impl<D: Dimension> View<D> {
     }
 
     /// the pixel intensity at a given index
-    pub fn item_at<T>(&self, index: &[isize]) -> Result<T>
+    pub fn item_at<T>(&self, index: &[isize]) -> Result<T, Error>
     where
         T: Number,
         ArrayD<T>: MinMax<Output = ArrayD<T>>,
@@ -637,7 +625,7 @@ impl<D: Dimension> View<D> {
     }
 
     /// collect the view into an ndarray
-    pub fn as_array<T>(&self) -> Result<Array<T, D>>
+    pub fn as_array<T>(&self) -> Result<Array<T, D>, Error>
     where
         T: Number,
         ArrayD<T>: MinMax<Output = ArrayD<T>>,
@@ -648,7 +636,7 @@ impl<D: Dimension> View<D> {
     }
 
     /// collect the view into a dynamic-dimension ndarray
-    pub fn as_array_dyn<T>(&self) -> Result<ArrayD<T>>
+    pub fn as_array_dyn<T>(&self) -> Result<ArrayD<T>, Error>
     where
         T: Number,
         ArrayD<T>: MinMax<Output = ArrayD<T>>,
@@ -889,7 +877,7 @@ impl<D: Dimension> View<D> {
     }
 
     /// turn the view into a 1d array
-    pub fn flatten<T>(&self) -> Result<Array1<T>>
+    pub fn flatten<T>(&self) -> Result<Array1<T>, Error>
     where
         T: Number,
         ArrayD<T>: MinMax<Output = ArrayD<T>>,
@@ -900,7 +888,7 @@ impl<D: Dimension> View<D> {
     }
 
     /// turn the data into a byte vector
-    pub fn to_bytes<T>(&self) -> Result<Vec<u8>>
+    pub fn to_bytes<T>(&self) -> Result<Vec<u8>, Error>
     where
         T: Number + ToBytesVec,
         ArrayD<T>: MinMax<Output = ArrayD<T>>,
@@ -915,7 +903,7 @@ impl<D: Dimension> View<D> {
     }
 
     /// retrieve a single frame at czt, sliced accordingly
-    pub fn get_frame<T, N>(&self, c: N, z: N, t: N) -> Result<Array2<T>>
+    pub fn get_frame<T, N>(&self, c: N, z: N, t: N) -> Result<Array2<T>, Error>
     where
         T: Number,
         ArrayD<T>: MinMax<Output = ArrayD<T>>,
@@ -925,17 +913,17 @@ impl<D: Dimension> View<D> {
     {
         let c = c
             .to_isize()
-            .ok_or_else(|| anyhow!("cannot convert {} into isize", c))?;
+            .ok_or_else(|| Error::Cast(c.to_string(), "isize".to_string()))?;
         let z = z
             .to_isize()
-            .ok_or_else(|| anyhow!("cannot convert {} into isize", z))?;
+            .ok_or_else(|| Error::Cast(z.to_string(), "isize".to_string()))?;
         let t = t
             .to_isize()
-            .ok_or_else(|| anyhow!("cannot convert {} into isize", t))?;
+            .ok_or_else(|| Error::Cast(t.to_string(), "isize".to_string()))?;
         self.slice_cztyx(s![c, z, t, .., ..])?.as_array()
     }
 
-    fn get_stat<T>(&self, operation: Operation) -> Result<T>
+    fn get_stat<T>(&self, operation: Operation) -> Result<T, Error>
     where
         T: Number + Sum,
         ArrayD<T>: MinMax<Output = ArrayD<T>>,
@@ -958,14 +946,14 @@ impl<D: Dimension> View<D> {
             Operation::Mean => {
                 arr.flatten().into_iter().sum::<T>()
                     / T::from_usize(arr.len()).ok_or_else(|| {
-                        anyhow!("cannot convert {} into {}", arr.len(), type_name::<T>())
+                        Error::Cast(arr.len().to_string(), type_name::<T>().to_string())
                     })?
             }
         })
     }
 
     /// maximum intensity
-    pub fn max<T>(&self) -> Result<T>
+    pub fn max<T>(&self) -> Result<T, Error>
     where
         T: Number + Sum,
         ArrayD<T>: MinMax<Output = ArrayD<T>>,
@@ -976,7 +964,7 @@ impl<D: Dimension> View<D> {
     }
 
     /// minimum intensity
-    pub fn min<T>(&self) -> Result<T>
+    pub fn min<T>(&self) -> Result<T, Error>
     where
         T: Number + Sum,
         ArrayD<T>: MinMax<Output = ArrayD<T>>,
@@ -987,7 +975,7 @@ impl<D: Dimension> View<D> {
     }
 
     /// sum intensity
-    pub fn sum<T>(&self) -> Result<T>
+    pub fn sum<T>(&self) -> Result<T, Error>
     where
         T: Number + Sum,
         ArrayD<T>: MinMax<Output = ArrayD<T>>,
@@ -998,7 +986,7 @@ impl<D: Dimension> View<D> {
     }
 
     /// mean intensity
-    pub fn mean<T>(&self) -> Result<T>
+    pub fn mean<T>(&self) -> Result<T, Error>
     where
         T: Number + Sum,
         ArrayD<T>: MinMax<Output = ArrayD<T>>,
@@ -1009,7 +997,7 @@ impl<D: Dimension> View<D> {
     }
 
     /// gives a helpful summary of the recorded experiment
-    pub fn summary(&self) -> Result<String> {
+    pub fn summary(&self) -> Result<String, Error> {
         let mut s = "".to_string();
         s.push_str(&format!("path/filename: {}\n", self.path.display()));
         s.push_str(&format!("series/pos:    {}\n", self.series));
@@ -1072,7 +1060,7 @@ where
 
 /// trait to define a function to retrieve the only item in a 0d array
 pub trait Item {
-    fn item<T>(&self) -> Result<T>
+    fn item<T>(&self) -> Result<T, Error>
     where
         T: Number,
         ArrayD<T>: MinMax<Output = ArrayD<T>>,
@@ -1081,7 +1069,7 @@ pub trait Item {
 }
 
 impl View<Ix5> {
-    pub fn from_path<P>(path: P, series: usize) -> Result<Self>
+    pub fn from_path<P>(path: P, series: usize) -> Result<Self, Error>
     where
         P: AsRef<Path>,
     {
@@ -1100,18 +1088,14 @@ impl View<Ix5> {
 }
 
 impl Item for View<Ix0> {
-    fn item<T>(&self) -> Result<T>
+    fn item<T>(&self) -> Result<T, Error>
     where
         T: Number,
         ArrayD<T>: MinMax<Output = ArrayD<T>>,
         Array1<T>: MinMax<Output = Array0<T>>,
         Array2<T>: MinMax<Output = Array1<T>>,
     {
-        Ok(self
-            .as_array()?
-            .first()
-            .ok_or_else(|| anyhow!("Empty view"))?
-            .clone())
+        Ok(self.as_array()?.first().ok_or(Error::EmptyView)?.clone())
     }
 }
 

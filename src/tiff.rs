@@ -1,9 +1,9 @@
 use crate::colors::Color;
+use crate::error::Error;
 use crate::metadata::Metadata;
 use crate::reader::PixelType;
 use crate::stats::MinMax;
 use crate::view::{Number, View};
-use anyhow::{Result, anyhow};
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::iproduct;
 use ndarray::{Array0, Array1, Array2, ArrayD, Dimension};
@@ -37,7 +37,7 @@ impl TiffOptions {
         compression: Option<Compression>,
         colors: Vec<String>,
         overwrite: bool,
-    ) -> Result<Self> {
+    ) -> Result<Self, Error> {
         let mut options = Self {
             bar: None,
             compression: compression.unwrap_or(Compression::Zstd(10)),
@@ -54,7 +54,7 @@ impl TiffOptions {
     }
 
     /// show a progress bar while saving tiff
-    pub fn enable_bar(&mut self) -> Result<()> {
+    pub fn enable_bar(&mut self) -> Result<(), Error> {
         self.bar = Some(ProgressStyle::with_template(
             "{spinner:.green} [{elapsed_precise}, {percent}%] [{wide_bar:.green/lime}] {pos:>7}/{len:7} ({eta_precise}, {per_sec:<5})",
         )?.progress_chars("▰▱▱"));
@@ -81,11 +81,11 @@ impl TiffOptions {
         self.compression = Compression::Deflate
     }
 
-    pub fn set_colors(&mut self, colors: &[String]) -> Result<()> {
+    pub fn set_colors(&mut self, colors: &[String]) -> Result<(), Error> {
         let colors = colors
             .iter()
             .map(|c| c.parse::<Color>())
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>, Error>>()?;
         self.colors = Some(colors.into_iter().map(|c| c.to_rgb()).collect());
         Ok(())
     }
@@ -100,7 +100,7 @@ where
     D: Dimension,
 {
     /// save as tiff with a certain type
-    pub fn save_as_tiff_with_type<T, P>(&self, path: P, options: &TiffOptions) -> Result<()>
+    pub fn save_as_tiff_with_type<T, P>(&self, path: P, options: &TiffOptions) -> Result<(), Error>
     where
         P: AsRef<Path>,
         T: Bytes + Number + Send + Sync,
@@ -113,7 +113,7 @@ where
             if options.overwrite {
                 std::fs::remove_file(&path)?;
             } else {
-                return Err(anyhow!("File {} already exists", path.display()));
+                return Err(Error::FileAlreadyExists(path.display().to_string()));
             }
         }
         let size_c = self.size_c();
@@ -145,10 +145,10 @@ where
                         bar.inc(1);
                         Ok(())
                     } else {
-                        Err(anyhow::anyhow!("tiff is locked"))
+                        Err(Error::TiffLock)
                     }
                 })
-                .collect::<Result<()>>()?;
+                .collect::<Result<(), Error>>()?;
             bar.finish();
         } else {
             iproduct!(0..size_c, 0..size_z, 0..size_t)
@@ -159,16 +159,16 @@ where
                         tiff.save(&self.get_frame::<T, _>(c, z, t)?, c, z, t)?;
                         Ok(())
                     } else {
-                        Err(anyhow::anyhow!("tiff is locked"))
+                        Err(Error::TiffLock)
                     }
                 })
-                .collect::<Result<()>>()?;
+                .collect::<Result<(), Error>>()?;
         };
         Ok(())
     }
 
     /// save as tiff with whatever pixel type the view has
-    pub fn save_as_tiff<P>(&self, path: P, options: &TiffOptions) -> Result<()>
+    pub fn save_as_tiff<P>(&self, path: P, options: &TiffOptions) -> Result<(), Error>
     where
         P: AsRef<Path>,
     {

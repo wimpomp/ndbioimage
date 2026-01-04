@@ -1,4 +1,4 @@
-use anyhow::Result;
+use crate::error::Error;
 use j4rs::{Instance, InvocationArg, Jvm, JvmBuilder};
 use std::cell::OnceCell;
 use std::rc::Rc;
@@ -12,7 +12,7 @@ fn jvm() -> Rc<Jvm> {
     JVM.with(|cell| {
         cell.get_or_init(move || {
             #[cfg(feature = "python")]
-            let path = crate::py::ndbioimage_file().unwrap();
+            let path = crate::py::ndbioimage_file();
 
             #[cfg(not(feature = "python"))]
             let path = std::env::current_exe()
@@ -45,13 +45,12 @@ fn jvm() -> Rc<Jvm> {
     })
 }
 
-pub fn download_bioformats(gpl_formats: bool) -> Result<()> {
+pub fn download_bioformats(gpl_formats: bool) -> Result<(), Error> {
     #[cfg(feature = "python")]
-    let path = crate::py::ndbioimage_file()?;
+    let path = crate::py::ndbioimage_file();
 
     #[cfg(not(feature = "python"))]
-    let path = std::env::current_exe()
-        .unwrap()
+    let path = std::env::current_exe()?
         .parent()
         .unwrap()
         .to_path_buf();
@@ -82,8 +81,8 @@ pub fn download_bioformats(gpl_formats: bool) -> Result<()> {
 }
 
 macro_rules! method_return {
-    ($R:ty$(|c)?) => { Result<$R> };
-    () => { Result<()> };
+    ($R:ty$(|c)?) => { Result<$R, Error> };
+    () => { Result<(), Error> };
 }
 
 macro_rules! method_arg {
@@ -139,7 +138,7 @@ pub struct DebugTools;
 
 impl DebugTools {
     /// set debug root level: ERROR, DEBUG, TRACE, INFO, OFF
-    pub fn set_root_level(level: &str) -> Result<()> {
+    pub fn set_root_level(level: &str) -> Result<(), Error> {
         jvm().invoke_static(
             "loci.common.DebugTools",
             "setRootLevel",
@@ -153,7 +152,7 @@ impl DebugTools {
 pub(crate) struct ChannelSeparator(Instance);
 
 impl ChannelSeparator {
-    pub(crate) fn new(image_reader: &ImageReader) -> Result<Self> {
+    pub(crate) fn new(image_reader: &ImageReader) -> Result<Self, Error> {
         let jvm = jvm();
         let channel_separator = jvm.create_instance(
             "loci.formats.ChannelSeparator",
@@ -162,7 +161,7 @@ impl ChannelSeparator {
         Ok(ChannelSeparator(channel_separator))
     }
 
-    pub(crate) fn open_bytes(&self, index: i32) -> Result<Vec<u8>> {
+    pub(crate) fn open_bytes(&self, index: i32) -> Result<Vec<u8>, Error> {
         Ok(transmute_vec(self.open_bi8(index)?))
     }
 
@@ -180,16 +179,16 @@ impl Drop for ImageReader {
 }
 
 impl ImageReader {
-    pub(crate) fn new() -> Result<Self> {
+    pub(crate) fn new() -> Result<Self, Error> {
         let reader = jvm().create_instance("loci.formats.ImageReader", InvocationArg::empty())?;
         Ok(ImageReader(reader))
     }
 
-    pub(crate) fn open_bytes(&self, index: i32) -> Result<Vec<u8>> {
+    pub(crate) fn open_bytes(&self, index: i32) -> Result<Vec<u8>, Error> {
         Ok(transmute_vec(self.open_bi8(index)?))
     }
 
-    pub(crate) fn ome_xml(&self) -> Result<String> {
+    pub(crate) fn ome_xml(&self) -> Result<String, Error> {
         let mds = self.get_metadata_store()?;
         Ok(jvm()
             .chain(&mds)?
@@ -224,7 +223,7 @@ impl ImageReader {
 pub(crate) struct MetadataTools(Instance);
 
 impl MetadataTools {
-    pub(crate) fn new() -> Result<Self> {
+    pub(crate) fn new() -> Result<Self, Error> {
         let meta_data_tools =
             jvm().create_instance("loci.formats.MetadataTools", InvocationArg::empty())?;
         Ok(MetadataTools(meta_data_tools))
