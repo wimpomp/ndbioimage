@@ -9,18 +9,13 @@ impl Metadata for Ome {
     fn get_instrument(&self) -> Option<&Instrument> {
         let instrument_id = self.get_image()?.instrument_ref.as_ref()?.id.clone();
         self.instrument
-            .as_ref()?
             .iter()
             .find(|i| i.id == instrument_id)
     }
 
     fn get_image(&self) -> Option<&Image> {
-        if let Some(image) = &self.image {
-            if !image.is_empty() {
-                Some(&image[0])
-            } else {
-                None
-            }
+        if let Some(image) = &self.image.first() {
+            Some(&image)
         } else {
             None
         }
@@ -130,24 +125,22 @@ pub trait Metadata {
     /// time interval in seconds for time-lapse images
     fn time_interval(&self) -> Result<Option<f64>, Error> {
         if let Some(pixels) = self.get_pixels() {
-            if let Some(plane) = &pixels.plane {
-                if let Some(t) = plane.iter().map(|p| p.the_t).max() {
-                    if t > 0 {
-                        let plane_a = plane
-                            .iter()
-                            .find(|p| (p.the_c == 0) && (p.the_z == 0) && (p.the_t == 0));
-                        let plane_b = plane
-                            .iter()
-                            .find(|p| (p.the_c == 0) && (p.the_z == 0) && (p.the_t == t));
-                        if let (Some(a), Some(b)) = (plane_a, plane_b) {
-                            if let (Some(a_t), Some(b_t)) = (a.delta_t, b.delta_t) {
-                                return Ok(Some(
-                                    (b.delta_t_unit.convert(&UnitsTime::s, b_t as f64)?
-                                        - a.delta_t_unit.convert(&UnitsTime::s, a_t as f64)?)
-                                    .abs()
-                                        / (t as f64),
-                                ));
-                            }
+            if let Some(t) = pixels.plane.iter().map(|p| p.the_t).max() {
+                if t > 0 {
+                    let plane_a = pixels.plane
+                        .iter()
+                        .find(|p| (p.the_c == 0) && (p.the_z == 0) && (p.the_t == 0));
+                    let plane_b = pixels.plane
+                        .iter()
+                        .find(|p| (p.the_c == 0) && (p.the_z == 0) && (p.the_t == t));
+                    if let (Some(a), Some(b)) = (plane_a, plane_b) {
+                        if let (Some(a_t), Some(b_t)) = (a.delta_t, b.delta_t) {
+                            return Ok(Some(
+                                (b.delta_t_unit.convert(&UnitsTime::s, b_t as f64)?
+                                    - a.delta_t_unit.convert(&UnitsTime::s, a_t as f64)?)
+                                .abs()
+                                    / (t as f64),
+                            ));
                         }
                     }
                 }
@@ -160,14 +153,12 @@ pub trait Metadata {
     fn exposure_time(&self, channel: usize) -> Result<Option<f64>, Error> {
         let c = channel as i32;
         if let Some(pixels) = self.get_pixels() {
-            if let Some(plane) = &pixels.plane {
-                if let Some(p) = plane
-                    .iter()
-                    .find(|p| (p.the_c == c) && (p.the_z == 0) && (p.the_t == 0))
-                {
-                    if let Some(t) = p.exposure_time {
-                        return Ok(Some(p.exposure_time_unit.convert(&UnitsTime::s, t as f64)?));
-                    }
+            if let Some(p) = pixels.plane
+                .iter()
+                .find(|p| (p.the_c == c) && (p.the_z == 0) && (p.the_t == 0))
+            {
+                if let Some(t) = p.exposure_time {
+                    return Ok(Some(p.exposure_time_unit.convert(&UnitsTime::s, t as f64)?));
                 }
             }
         }

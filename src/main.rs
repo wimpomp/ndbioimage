@@ -4,7 +4,7 @@ use ndarray::SliceInfoElem;
 use ndbioimage::error::Error;
 #[cfg(feature = "movie")]
 use ndbioimage::movie::MovieOptions;
-use ndbioimage::reader::split_path_and_series;
+use ndbioimage::reader::{split_path_and_series, Reader};
 #[cfg(feature = "tiff")]
 use ndbioimage::tiff::TiffOptions;
 use ndbioimage::view::View;
@@ -21,6 +21,11 @@ struct Cli {
 enum Commands {
     /// Print some metadata
     Info {
+        #[arg(value_name = "FILE", num_args(1..))]
+        file: Vec<PathBuf>,
+    },
+    /// save ome metadata as xml
+    ExtractOME {
         #[arg(value_name = "FILE", num_args(1..))]
         file: Vec<PathBuf>,
     },
@@ -111,6 +116,14 @@ pub(crate) fn main() -> Result<(), Error> {
                 let (path, series) = split_path_and_series(f)?;
                 let view = View::from_path(path, series.unwrap_or(0))?.squeeze()?;
                 println!("{}", view.summary()?);
+            }
+        }
+        Commands::ExtractOME { file } => {
+            for f in file {
+                let (path, series) = split_path_and_series(f)?;
+                let reader = Reader::new(&path, series.unwrap_or(0))?;
+                let xml = reader.get_ome_xml()?;
+                std::fs::write(path.with_extension("xml"), xml)?;
             }
         }
         #[cfg(feature = "tiff")]

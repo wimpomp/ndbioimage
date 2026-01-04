@@ -344,10 +344,8 @@ impl Reader {
     /// Get ome metadata as ome structure
     pub fn get_ome(&self) -> Result<Ome, Error> {
         let mut ome = self.ome_xml()?.parse::<Ome>()?;
-        if let Some(image) = ome.image.as_ref() {
-            if image.len() > 1 {
-                ome.image = Some(vec![image[self.series].clone()]);
-            }
+        if ome.image.len() > 1 {
+            ome.image = vec![ome.image[self.series].clone()];
         }
         Ok(ome)
     }
