@@ -34,21 +34,55 @@ class Reader(AbstractReader, ABC):
 
     def get_ome(self):
         if self.reader.is_ome:
+            pos_number_pat = re.compile(r"\d+")
+
+            def get_pos_number(s):
+                return [int(i) for i in pos_number_pat.findall(s)]
+
             match = re.match(r"^(.*)(pos[\d_]+)(.*)$", self.path.name, flags=re.IGNORECASE)
             if match is not None and len(match.groups()) == 3:
                 a, b, c = match.groups()
                 pat = re.compile(f"^{re.escape(a)}" + re.sub(r"\d+", r"\\d+", b) + f"{re.escape(c)}$")
+                backup_ome = []
+                backup_backup_ome = []
+
+                pos_number = get_pos_number(b)
                 for file in sorted(self.path.parent.iterdir(), key=lambda i: (len(i.name), i.name)):
                     if pat.match(file.name):
                         with tifffile.TiffFile(file) as tif:
                             with warnings.catch_warnings():
                                 warnings.simplefilter("ignore", category=UserWarning)
                                 ome = from_xml(tif.ome_metadata)
-                                ome.images = [
-                                    image for image in ome.images if self.path.stem[: len(image.name)] == image.name
-                                ]
+                                backup_backup_ome.extend(ome.images)
+                                try:
+                                    backup_ome.extend(
+                                        [
+                                            image
+                                            for image in ome.images
+                                            if pos_number == get_pos_number(image.stage_label.name)
+                                        ]
+                                    )
+                                except ValueError:
+                                    pass
+                                ome.images = [image for image in ome.images if b == image.stage_label.name]
                                 if ome.images:
                                     return ome
+                if backup_ome:
+                    ome.images = [backup_ome[0]]
+                    warnings.warn(
+                        "could not find the ome.tif file containing the metadata with an exact match, "
+                        f"matched {ome.images[0].stage_label.name} with {b} instead, "
+                        "did you rename the file?"
+                    )
+                    return ome
+                if backup_backup_ome:
+                    ome.images = [backup_backup_ome[0]]
+                    warnings.warn(
+                        "could not find the ome.tif file containing the metadata, "
+                        f"used metadata from {ome.images[0].name} instead, "
+                        "did you rename the file"
+                    )
+                    return ome
             warnings.warn("could not find the ome.tif file containing the metadata")
 
         page = self.reader.pages[0]
