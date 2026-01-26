@@ -212,14 +212,13 @@ class Transforms(dict):
                 else:
                     main_channel = goodch[0]
             transform = Transform()
-            if not good_and_untrans:
-                matrix = transform.matrix
-                if default_transform is None:
-                    matrix[0, 0] = 0.86
-                else:
-                    for i, t in zip(([0, 0], [0, 1], [1, 0], [1, 1], [0, 2], [1, 2]), default_transform):
-                        matrix[i] = t
-                transform.matrix = matrix
+            matrix = transform.matrix
+            if default_transform is None:
+                matrix[0, 0] = 0.86
+            else:
+                for i, t in zip(((0, 0), (0, 1), (1, 0), (1, 1), (0, 2), (1, 2)), default_transform):
+                    matrix[i] = t
+            transform.matrix = matrix
             transforms = Transforms()
             for c in tqdm(goodch, desc="Calculating channel transforms"):  # noqa
                 if c == main_channel:
