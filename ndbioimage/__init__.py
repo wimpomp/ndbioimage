@@ -1253,6 +1253,8 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
         drift: bool = False,
         file: Path | str = None,
         bead_files: Sequence[Path | str] = (),
+        main_channel: int = None,
+        default_transform: Sequence[float] = None,
     ) -> View:
         """returns a view where channels and/or frames are registered with an affine transformation
         channels: True/False register channels using bead_files
@@ -1260,6 +1262,11 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
         file: load registration from file with name file, default: transform.yml in self.path.parent
         bead_files: files used to register channels, default: files in self.path.parent,
             with names starting with 'beads'
+        main channel: which channel to transform with default_transform
+        default_transform: parameters of the default transform: [a, b, c, d, e, f] where the affine transform matrix is
+            | a b e |
+            | c d f |
+            | 0 0 1 |
         """
         view = self.view()
         if file is None:
@@ -1278,7 +1285,7 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
             try:
                 view.transform = Transforms.from_file(file, T=drift)
             except Exception:  # noqa
-                view.transform = Transforms().with_beads(view.cyllens, bead_files)
+                view.transform = Transforms().with_beads(view.cyllens, bead_files, main_channel, default_transform)
                 if drift:
                     view.transform = view.transform.with_drift(view)
                 view.transform.save(file.with_suffix(".yml"))

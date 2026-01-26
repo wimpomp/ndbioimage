@@ -147,9 +147,11 @@ class Transforms(dict):
         else:
             raise TypeError("Not a pandas DataFrame or Series.")
 
-    def with_beads(self, cyllens, bead_files):
+    def with_beads(self, cyllens, bead_files, main_channel=None, default_transform=None):
         assert len(bead_files) > 0, "At least one file is needed to calculate the registration."
-        transforms = [self.calculate_channel_transforms(file, cyllens) for file in bead_files]
+        transforms = [
+            self.calculate_channel_transforms(file, cyllens, main_channel, default_transform) for file in bead_files
+        ]
         for key in {key for transform in transforms for key in transform.keys()}:
             new_transforms = [transform[key] for transform in transforms if key in transform]
             if len(new_transforms) == 1:
@@ -191,7 +193,7 @@ class Transforms(dict):
         return checked_files
 
     @staticmethod
-    def calculate_channel_transforms(bead_file, cyllens):
+    def calculate_channel_transforms(bead_file, cyllens, main_channel=None, default_transform=None):
         """When no channel is not transformed by a cylindrical lens, assume that the image is scaled by a factor 1.162
         in the horizontal direction"""
         from . import Imread
@@ -204,25 +206,30 @@ class Transforms(dict):
             untransformed = [c for c in range(im.shape["c"]) if cyllens[im.detector[c]].lower() == "none"]
 
             good_and_untrans = sorted(set(goodch) & set(untransformed))
-            if good_and_untrans:
-                masterch = good_and_untrans[0]
-            else:
-                masterch = goodch[0]
+            if main_channel is None:
+                if good_and_untrans:
+                    main_channel = good_and_untrans[0]
+                else:
+                    main_channel = goodch[0]
             transform = Transform()
             if not good_and_untrans:
                 matrix = transform.matrix
-                matrix[0, 0] = 0.86
+                if default_transform is None:
+                    matrix[0, 0] = 0.86
+                else:
+                    for i, t in zip(([0, 0], [0, 1], [1, 0], [1, 1], [0, 2], [1, 2]), default_transform):
+                        matrix[i] = t
                 transform.matrix = matrix
             transforms = Transforms()
             for c in tqdm(goodch, desc="Calculating channel transforms"):  # noqa
-                if c == masterch:
+                if c == main_channel:
                     transforms[im.channel_names[c]] = transform
                 else:
-                    transforms[im.channel_names[c]] = Transform.register(max_ims[masterch], max_ims[c]) * transform
+                    transforms[im.channel_names[c]] = Transform.register(max_ims[main_channel], max_ims[c]) * transform
         return transforms
 
     @staticmethod
-    def save_channel_transform_tiff(bead_files, tiffile):
+    def save_channel_transform_tiff(bead_files, tiffile, default_transform=None):
         from . import Imread
 
         n_channels = 0
@@ -232,7 +239,7 @@ class Transforms(dict):
         with IJTiffFile(tiffile) as tif:
             for t, file in enumerate(bead_files):
                 with Imread(file) as im:
-                    with Imread(file).with_transform() as jm:
+                    with Imread(file).with_transform(default_transform=default_transform) as jm:
                         for c in range(im.shape["c"]):
                             tif.save(np.hstack((im(c=c, t=0).max("z"), jm(c=c, t=0).max("z"))), c, 0, t)
 
