@@ -1,4 +1,5 @@
 import re
+import warnings
 from abc import ABC
 from datetime import datetime
 from itertools import product
@@ -59,9 +60,10 @@ class Reader(AbstractReader, ABC):
         ome = model.OME()
         with tifffile.TiffFile(self.filedict[0, 0, 0]) as tif:
             metadata = {key: yaml.safe_load(value) for key, value in tif.pages[0].tags[50839].value.items()}
-        ome.experimenters.append(
-            model.Experimenter(id="Experimenter:0", user_name=metadata["Info"]["Summary"]["UserName"])
-        )
+        if "Summary" in metadata["Info"] and "UserName" in metadata["Info"]["Summary"]:
+            ome.experimenters.append(
+                model.Experimenter(id="Experimenter:0", user_name=metadata["Info"]["Summary"]["UserName"])
+            )
         objective_str = metadata["Info"]["ZeissObjectiveTurret-Label"]
         ome.instruments.append(model.Instrument())
         ome.instruments[0].objectives.append(
@@ -112,7 +114,7 @@ class Reader(AbstractReader, ABC):
                     type=pixel_type,
                     physical_size_x=pxsize,
                     physical_size_y=pxsize,
-                    physical_size_z=metadata["Info"]["Summary"]["z-step_um"],
+                    physical_size_z=metadata["Info"]["Summary"]["z-step_um"] if "Summary" in metadata["Info"] else None,
                 ),
                 objective_settings=model.ObjectiveSettings(id="Objective:0"),
             )
@@ -164,7 +166,15 @@ class Reader(AbstractReader, ABC):
             metadata = {key: yaml.safe_load(value) for key, value in tif.pages[0].tags[50839].value.items()}
 
         # compare channel names from metadata with filenames
-        cnamelist = metadata["Info"]["Summary"]["ChNames"]
+        if "Summary" in metadata["Info"] and "ChNames" in metadata["Info"]["Summary"]:
+            cnamelist = metadata["Info"]["Summary"]["ChNames"]
+        elif (self.path.parent / "display_and_comments.txt").exists():
+            warnings.warn(f"{self.path} is missing some metadata")
+            with open(self.path.parent / "display_and_comments.txt") as f:
+                cnamelist = [channel["Name"] for channel in yaml.safe_load(f)["Channels"]]
+        else:
+            raise ValueError("could not find metadata describing the order of the channels")
+
         cnamelist = [c for c in cnamelist if any([c in f.name for f in filelist])]
 
         pattern_c = re.compile(r"img_\d{3,}_(.*)_\d{3,}$", re.IGNORECASE)

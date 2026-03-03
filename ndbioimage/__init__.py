@@ -1306,9 +1306,11 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
     @staticmethod
     def split_path_series(path: Path | str) -> tuple[Path, int]:
         if isinstance(path, str):
-            path = Path(path)
+            path = Path(path).absolute()
         if isinstance(path, Path) and path.name.startswith("Pos") and path.name.lstrip("Pos").isdigit():
-            return path.parent, int(path.name.lstrip("Pos"))
+            return path.absolute().parent, int(path.name.lstrip("Pos"))
+        if isinstance(path, Path):
+            return path.absolute(), 0
         return path, 0
 
     def view(self, *args: Any, **kwargs: Any) -> View:
