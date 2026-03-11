@@ -1,6 +1,6 @@
 [project]
 name = "ndbioimage"
-version = "2026.3.1"
+version = "2026.3.2"
 description = "Bio image reading, metadata and some affine registration."
 authors = [
     { name = "W. Pomp", email = "w.pomp@nki.nl" }
@@ -14,7 +14,7 @@ exclude = ["ndbioimage/jars"]
 
 dependencies = [
     "czifile == 2019.7.2",
-    "imagecodecs",
+    "imagecodecs <= 2026.1.14",
     "lxml",
     "numpy >= 1.20",
     "ome-types",
