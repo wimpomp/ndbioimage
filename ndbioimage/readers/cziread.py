@@ -199,7 +199,10 @@ class Reader(AbstractReader, ABC):
                     for i, j, k, m in zip(directory_entry.start, self.reader.start, tile.shape, axes_min)
                 ]
                 index = tuple(index[self.reader.axes.index(i)] for i in "YX")
-                f[index] = tile.squeeze()
+                try:
+                    f[index] = tile.squeeze()
+                except ValueError:
+                    f = tile.squeeze()
         return f
 
     @staticmethod
