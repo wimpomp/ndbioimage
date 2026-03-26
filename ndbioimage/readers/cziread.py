@@ -190,9 +190,11 @@ class Reader(AbstractReader, ABC):
             y = np.unique(y)
             _, bx = np.histogram(x, self.tiles[0])
             _, by = np.histogram(y, self.tiles[1])
-            by, bx = list(product([(i, j) for i, j in zip(by, by[1:])], [(i, j) for i, j in zip(bx, bx[1:])]))[
-                self.series
-            ]
+            b = list(product([(i, j) for i, j in zip(by, by[1:])], [(i, j) for i, j in zip(bx, bx[1:])]))
+            if self.series < len(b):
+                by, bx = b[self.series]
+            else:
+                raise FileNotFoundError(self.path / f"Pos{self.series}")
             for directory_entry in self.reader.filtered_subblock_directory:
                 idx = self.get_index(directory_entry, self.reader.start)
                 if bx[0] <= idx[xi][0] <= bx[1] and by[0] <= idx[yi][0] <= by[1]:
