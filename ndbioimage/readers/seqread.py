@@ -114,7 +114,9 @@ class Reader(AbstractReader, ABC):
                     type=pixel_type,
                     physical_size_x=pxsize,
                     physical_size_y=pxsize,
-                    physical_size_z=metadata["Info"]["Summary"]["z-step_um"] if "Summary" in metadata["Info"] else None,
+                    physical_size_z=metadata["Info"]["Summary"]["z-step_um"]
+                    if "Summary" in metadata["Info"]
+                    else None,
                 ),
                 objective_settings=model.ObjectiveSettings(id="Objective:0"),
             )

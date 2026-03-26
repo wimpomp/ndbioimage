@@ -87,6 +87,7 @@ def find(obj: Sequence[Any], **kwargs: Any) -> Any:
                 return item
         except AttributeError:
             pass
+    return None
 
 
 R = TypeVar("R")
@@ -154,23 +155,26 @@ class OmeCache(DequeDict):
     def __reduce__(self) -> tuple[type, tuple]:
         return self.__class__, ()
 
-    def __getitem__(self, path: Path | str | tuple) -> OME:
+    def __getitem__(self, path_and_series: tuple[Path | str | tuple, int]) -> OME:
+        path, series = path_and_series
         if isinstance(path, tuple):
-            return super().__getitem__(path)
+            return super().__getitem__((path, series))
         else:
-            return super().__getitem__(self.path_and_lstat(path))
+            return super().__getitem__((self.path_and_lstat(path), series))
 
-    def __setitem__(self, path: Path | str | tuple, value: OME) -> None:
+    def __setitem__(self, path_and_series: tuple[Path | str | tuple, int], value: OME) -> None:
+        path, series = path_and_series
         if isinstance(path, tuple):
-            super().__setitem__(path, value)
+            super().__setitem__((path, series), value)
         else:
-            super().__setitem__(self.path_and_lstat(path), value)
+            super().__setitem__((self.path_and_lstat(path), series), value)
 
-    def __contains__(self, path: Path | str | tuple) -> bool:
+    def __contains__(self, path_and_series: tuple[Path | str | tuple, int]) -> bool:
+        path, series = path_and_series
         if isinstance(path, tuple):
-            return super().__contains__(path)
+            return super().__contains__((path, series))
         else:
-            return super().__contains__(self.path_and_lstat(path))
+            return super().__contains__((self.path_and_lstat(path), series))
 
     @staticmethod
     def path_and_lstat(path: str | Path) -> tuple[Path, Optional[os.stat_result], Optional[os.stat_result]]:
@@ -1025,7 +1029,7 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
         return [self.get_channel(c) for c in czt[0]], *czt[1:3]  # type: ignore
 
     @staticmethod
-    def bioformats_ome(path: [str, Path]) -> OME:
+    def bioformats_ome(path: str | Path) -> OME:
         """Use java BioFormats to make an ome metadata structure."""
         with multiprocessing.get_context("spawn").Pool(1) as pool:
             return pool.map(bioformats_ome, (path,))[0]
@@ -1057,10 +1061,11 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
         return ome
 
     @staticmethod
-    def read_ome(path: [str, Path]) -> Optional[OME]:
+    def read_ome(path: str | Path) -> Optional[OME]:
         path = Path(path)
         if path.with_suffix(".ome.xml").exists():
             return OME.from_xml(path.with_suffix(".ome.xml"))
+        return None
 
     def get_ome(self) -> OME:
         """overload this"""
@@ -1069,12 +1074,12 @@ class Imread(np.lib.mixins.NDArrayOperatorsMixin, ABC):
     @cached_property
     def ome(self) -> OME:
         cache = OmeCache()
-        if self.path not in cache:
+        if (self.path, self.series) not in cache:
             ome = self.read_ome(self.path)
             if ome is None:
                 ome = self.get_ome()
-            cache[self.path] = self.fix_ome(ome)
-        return cache[self.path]
+            cache[self.path, self.series] = self.fix_ome(ome)
+        return cache[self.path, self.series]
 
     def is_noise(self, volume: ArrayLike = None) -> bool:
         """True if volume only has noise"""

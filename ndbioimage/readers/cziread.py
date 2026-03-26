@@ -14,7 +14,7 @@ from lxml import etree
 from ome_types import OME, model
 from tifffile import repeat_nd
 
-from .. import AbstractReader
+from .. import AbstractReader, ureg
 
 try:
     # TODO: use zoom from imagecodecs implementation when available
@@ -152,6 +152,14 @@ def data(self, raw: bool = False, resize: bool = True, order: int = 0) -> np.nda
 czifile.czifile.SubBlockSegment.data = data
 
 
+def xml_walk(tree, elements):
+    element, *elements = elements
+    if elements:
+        return [j for i in tree.findall(element) for j in xml_walk(i, elements)]
+    else:
+        return tree.findall(element)
+
+
 class Reader(AbstractReader, ABC):
     priority = 0
     do_not_pickle = "reader", "filedict"
@@ -163,16 +171,49 @@ class Reader(AbstractReader, ABC):
     def open(self) -> None:
         self.reader = czifile.CziFile(self.path)
         filedict = {}
+        syx = set()
+        si = self.reader.axes.index("S") if "S" in self.reader.axes else None
+        ci = self.reader.axes.index("C") if "C" in self.reader.axes else None
+        zi = self.reader.axes.index("Z") if "Z" in self.reader.axes else None
+        ti = self.reader.axes.index("T") if "T" in self.reader.axes else None
+        yi = self.reader.axes.index("Y") if "Y" in self.reader.axes else None
+        xi = self.reader.axes.index("X") if "X" in self.reader.axes else None
+
         for directory_entry in self.reader.filtered_subblock_directory:
             idx = self.get_index(directory_entry, self.reader.start)
-            if "S" not in self.reader.axes or self.series in range(*idx[self.reader.axes.index("S")]):
-                for c in range(*idx[self.reader.axes.index("C")]):
-                    for z in range(*idx[self.reader.axes.index("Z")]):
-                        for t in range(*idx[self.reader.axes.index("T")]):
-                            if (c, z, t) in filedict:
-                                filedict[c, z, t].append(directory_entry)
-                            else:
-                                filedict[c, z, t] = [directory_entry]
+            syx.add((0 if si is None else idx[si], idx[yi], idx[xi]))
+
+        if self.tiles != (1, 1):
+            assert len({s for s, *_ in list(syx)}) == 1, "multiple tiled series not supported"
+            x, y = np.array(list(syx))[:, 1:, 0].T
+            x = np.unique(x)
+            y = np.unique(y)
+            _, bx = np.histogram(x, self.tiles[0])
+            _, by = np.histogram(y, self.tiles[1])
+            by, bx = list(product([(i, j) for i, j in zip(by, by[1:])], [(i, j) for i, j in zip(bx, bx[1:])]))[
+                self.series
+            ]
+            for directory_entry in self.reader.filtered_subblock_directory:
+                idx = self.get_index(directory_entry, self.reader.start)
+                if bx[0] <= idx[xi][0] <= bx[1] and by[0] <= idx[yi][0] <= by[1]:
+                    for cj in (0,) if ci is None else range(*idx[ci]):
+                        for zj in (0,) if zi is None else range(*idx[zi]):
+                            for tj in (0,) if ti is None else range(*idx[ti]):
+                                if (cj, zj, tj) in filedict:
+                                    filedict[cj, zj, tj].append(directory_entry)
+                                else:
+                                    filedict[cj, zj, tj] = [directory_entry]
+        else:
+            for directory_entry in self.reader.filtered_subblock_directory:
+                idx = self.get_index(directory_entry, self.reader.start)
+                if si is None or self.series == idx[si][0]:
+                    for cj in (0,) if ci is None else range(*idx[ci]):
+                        for zj in (0,) if zi is None else range(*idx[zi]):
+                            for tj in (0,) if ti is None else range(*idx[ti]):
+                                if (cj, zj, tj) in filedict:
+                                    filedict[cj, zj, tj].append(directory_entry)
+                                else:
+                                    filedict[cj, zj, tj] = [directory_entry]
         if len(filedict) == 0:
             raise FileNotFoundError(f"Series {self.series} not found in {self.path}.")
         self.filedict = filedict  # noqa
@@ -187,27 +228,50 @@ class Reader(AbstractReader, ABC):
         f = np.zeros(self.base_shape["yx"], self.dtype)
         if (c, z, t) in self.filedict:
             directory_entries = self.filedict[c, z, t]
-            x_min = min([f.start[f.axes.index("X")] for f in directory_entries])
-            y_min = min([f.start[f.axes.index("Y")] for f in directory_entries])
-            xy_min = {"X": x_min, "Y": y_min}
+            start = np.min([directory_entry.start for directory_entry in directory_entries], 0)
             for directory_entry in directory_entries:
                 subblock = directory_entry.data_segment()
                 tile = subblock.data(resize=True, order=0)
-                axes_min = [xy_min.get(ax, 0) for ax in directory_entry.axes]
-                index = [
-                    slice(i - j - m, i - j + k)
-                    for i, j, k, m in zip(directory_entry.start, self.reader.start, tile.shape, axes_min)
-                ]
+                index = [slice(i - j, i - j + k) for i, j, k in zip(directory_entry.start, start, tile.shape)]
                 index = tuple(index[self.reader.axes.index(i)] for i in "YX")
-                try:
-                    f[index] = tile.squeeze()
-                except ValueError:
-                    f = tile.squeeze()
+                f[index] = tile.squeeze()
         return f
 
     @staticmethod
     def get_index(directory_entry: czifile.DirectoryEntryDV, start: tuple[int]) -> list[tuple[int, int]]:
         return [(i - j, i - j + k) for i, j, k in zip(directory_entry.start, start, directory_entry.shape)]
+
+    @cached_property
+    def tiles(self):
+        columns = 1
+        rows = 1
+        xml = self.reader.metadata()
+        tree = etree.fromstring(xml)
+        tile_regions = xml_walk(
+            tree,
+            (
+                "Metadata",
+                "Experiment",
+                "ExperimentBlocks",
+                "AcquisitionBlock",
+                "SubDimensionSetups",
+                "RegionsSetup",
+                "SampleHolder",
+                "TileRegions",
+                "TileRegion",
+            ),
+        )
+        for tile_region in tile_regions:
+            used = tile_region.find("IsUsedForAcquisition")
+            if used is not None and used.text.lower() == "true":
+                c = tile_region.find("Columns")
+                if c is not None:
+                    columns = int(c.text)
+                r = tile_region.find("Rows")
+                if r is not None:
+                    rows = int(r.text)
+                break
+        return columns, rows
 
 
 class OmeParse:
@@ -432,7 +496,7 @@ class OmeParse:
         self.size_x = x_max - x_min
         self.size_y = y_max - y_min
         self.size_c, self.size_z, self.size_t = (
-            self.reader.shape[self.reader.axes.index(directory_entry)] for directory_entry in "CZT"
+            self.reader.shape[self.reader.axes.index(axis)] if axis in self.reader.axes else 1 for axis in "CZT"
         )
         image = self.information.find("Image")
         pixel_type = self.text(image.find("PixelType"), "Gray16")
@@ -498,6 +562,8 @@ class OmeParse:
             except AttributeError:
                 center_position = [0, 0]
             return center_position[0], center_position[1], None
+        else:
+            raise NotImplementedError(f"unknown czi version: {self.version}")
 
     @cached_property
     def channels_im(self) -> dict:
@@ -642,7 +708,16 @@ class OmeParse:
             delta_ts = dt * np.arange(len(delta_ts))
             warnings.warn(f"delta_t is inconsistent, using median value: {dt}")
 
+        pxsize_x = self.ome.images[0].pixels.physical_size_x_quantity.to(ureg.um).magnitude
+        pxsize_y = self.ome.images[0].pixels.physical_size_y_quantity.to(ureg.um).magnitude
+
         for t, z, c in product(range(self.size_t), range(self.size_z), range(self.size_c)):
+            x_min = (
+                min([f.start[f.axes.index("X")] for f in self.filedict[c, z, t]]) if (c, z, t) in self.filedict else 0
+            )
+            y_min = (
+                min([f.start[f.axes.index("Y")] for f in self.filedict[c, z, t]]) if (c, z, t) in self.filedict else 0
+            )
             self.ome.images[0].pixels.planes.append(
                 model.Plane(
                     the_c=c,
@@ -650,9 +725,9 @@ class OmeParse:
                     the_t=t,
                     delta_t=delta_ts[t],
                     exposure_time=exposure_times[min(c, len(exposure_times) - 1)] if len(exposure_times) > 0 else None,
-                    position_x=self.positions[0],
+                    position_x=self.positions[0] + x_min * pxsize_x,
                     position_x_unit=self.um,
-                    position_y=self.positions[1],
+                    position_y=self.positions[1] + y_min * pxsize_y,
                     position_y_unit=self.um,
                     position_z=self.positions[2],
                     position_z_unit=self.um,
