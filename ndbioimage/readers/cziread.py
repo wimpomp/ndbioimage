@@ -178,6 +178,8 @@ class Reader(AbstractReader, ABC):
         ti = self.reader.axes.index("T") if "T" in self.reader.axes else None
         yi = self.reader.axes.index("Y") if "Y" in self.reader.axes else None
         xi = self.reader.axes.index("X") if "X" in self.reader.axes else None
+        if si is None and self.series > 0:
+            raise FileNotFoundError(f"Series {self.series} not found in {self.path}.")
 
         for directory_entry in self.reader.filtered_subblock_directory:
             idx = self.get_index(directory_entry, self.reader.start)
@@ -194,7 +196,7 @@ class Reader(AbstractReader, ABC):
             if self.series < len(b):
                 by, bx = b[self.series]
             else:
-                raise FileNotFoundError(self.path / f"Pos{self.series}")
+                raise FileNotFoundError(f"Series {self.series} not found in {self.path}.")
             for directory_entry in self.reader.filtered_subblock_directory:
                 idx = self.get_index(directory_entry, self.reader.start)
                 if bx[0] <= idx[xi][0] <= bx[1] and by[0] <= idx[yi][0] <= by[1]:
