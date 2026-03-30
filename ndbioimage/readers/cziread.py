@@ -188,10 +188,12 @@ class Reader(AbstractReader, ABC):
         if self.tiles != (1, 1):
             assert len({s for s, *_ in list(syx)}) == 1, "multiple tiled series not supported"
             x, y = np.array(list(syx))[:, 1:, 0].T
-            x = np.unique(x)
-            y = np.unique(y)
-            _, bx = np.histogram(x, self.tiles[0])
-            _, by = np.histogram(y, self.tiles[1])
+            a, b = np.min(x), np.max(x)
+            n = self.tiles[0]
+            bx = np.linspace(a - (b - a) / (n - 1) / 2, b + (b - a) / (n - 1) / 2, n + 1)
+            a, b = np.min(y), np.max(y)
+            n = self.tiles[1]
+            by = np.linspace(a - (b - a) / (n - 1) / 2, b + (b - a) / (n - 1) / 2, n + 1)
             b = list(product([(i, j) for i, j in zip(by, by[1:])], [(i, j) for i, j in zip(bx, bx[1:])]))
             if self.series < len(b):
                 by, bx = b[self.series]
@@ -199,7 +201,7 @@ class Reader(AbstractReader, ABC):
                 raise FileNotFoundError(f"Series {self.series} not found in {self.path}.")
             for directory_entry in self.reader.filtered_subblock_directory:
                 idx = self.get_index(directory_entry, self.reader.start)
-                if bx[0] <= idx[xi][0] <= bx[1] and by[0] <= idx[yi][0] <= by[1]:
+                if bx[0] < idx[xi][0] < bx[1] and by[0] < idx[yi][0] < by[1]:
                     for cj in (0,) if ci is None else range(*idx[ci]):
                         for zj in (0,) if zi is None else range(*idx[zi]):
                             for tj in (0,) if ti is None else range(*idx[ti]):
